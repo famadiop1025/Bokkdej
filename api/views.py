@@ -1,8 +1,9 @@
 from rest_framework import viewsets, permissions
+from django.db.models import Q
 from django.contrib.auth.models import User
 from .models import MenuItem, Ingredient, CustomDish, Order, Restaurant, Base
 from .serializers import (
-    MenuItemSerializer, IngredientSerializer, CustomDishSerializer, OrderSerializer, UserSerializer, UserRegisterSerializer, CustomTokenObtainPairSerializer, RestaurantSerializer, BaseSerializer
+    MenuItemSerializer, IngredientSerializer, CustomDishSerializer, UserSerializer, RestaurantSerializer, BaseSerializer, OrderSerializer
 )
 from rest_framework.permissions import BasePermission, SAFE_METHODS
 from rest_framework.decorators import action, api_view, permission_classes
@@ -13,18 +14,16 @@ from rest_framework_simplejwt.tokens import RefreshToken
 from rest_framework_simplejwt.views import TokenObtainPairView
 from pyfcm import FCMNotification
 from .models import UserProfile
+from django.conf import settings
 
 class IsAdminOrReadOnly(BasePermission):
     def has_permission(self, request, view):
         if request.method in SAFE_METHODS:
             return True
-        # Vérifier que l'utilisateur est authentifié et a un profil admin
+        # Vérifier que l'utilisateur est authentifié et est staff
         if not request.user.is_authenticated:
             return False
-        try:
-            return hasattr(request.user, 'userprofile') and request.user.userprofile.role == 'admin'
-        except:
-            return False
+        return request.user.is_staff
 
 class UserViewSet(viewsets.ReadOnlyModelViewSet):
     queryset = User.objects.all()
@@ -57,14 +56,15 @@ class UserViewSet(viewsets.ReadOnlyModelViewSet):
 def user_profile(request):
     """Retourne les informations du profil de l'utilisateur connecté"""
     user = request.user
-    role = None
     restaurant_id = None
     try:
         if hasattr(user, 'userprofile'):
-            role = user.userprofile.role
-            restaurant_id = user.userprofile.restaurant.id if user.userprofile.restaurant else None
+            # Le champ role n'existe plus, on utilise is_staff à la place
+            role = 'admin' if user.is_staff else 'client'
+            restaurant_id = None  # Le champ restaurant n'existe plus non plus
     except Exception:
-        pass
+        role = 'client'
+        restaurant_id = None
     return Response({
         'id': user.id,
         'username': user.username,
@@ -76,6 +76,22 @@ def user_profile(request):
         'is_active': user.is_active,
     })
 
+@api_view(['POST'])
+@permission_classes([permissions.IsAuthenticated])
+def update_fcm_token(request):
+    try:
+        token = request.data.get('fcm_token')
+        if not token:
+            return Response({'error': 'fcm_token requis'}, status=400)
+        if not hasattr(request.user, 'userprofile'):
+            return Response({'error': 'Profil introuvable'}, status=400)
+        profile = request.user.userprofile
+        profile.fcm_token = token
+        profile.save()
+        return Response({'ok': True})
+    except Exception as e:
+        return Response({'error': str(e)}, status=500)
+
 class MenuItemViewSet(viewsets.ModelViewSet):
     queryset = MenuItem.objects.all()
     serializer_class = MenuItemSerializer
@@ -83,23 +99,36 @@ class MenuItemViewSet(viewsets.ModelViewSet):
     parser_classes = [MultiPartParser, FormParser]
     
     def get_queryset(self):
-        """Filtrer les menus par restaurant de l'utilisateur"""
-        user = self.request.user
-        if user.is_authenticated and hasattr(user, 'userprofile'):
-            if user.userprofile.role == 'admin' and user.userprofile.restaurant:
-                return MenuItem.objects.filter(restaurant=user.userprofile.restaurant)
-            elif user.userprofile.role == 'admin':
-                return MenuItem.objects.all()  # Super admin voit tout
-        return MenuItem.objects.all()
+        """Supporte le filtre par restaurant et la visibilité publique (disponible).
+        Si aucun plat disponible n'est trouvé, on renvoie en fallback tous les plats pour éviter un menu vide involontaire.
+        """
+        qs = MenuItem.objects.all()
+        request = self.request
+        restaurant_id = request.query_params.get('restaurant') or request.query_params.get('restaurant_id')
+        if restaurant_id:
+            qs = qs.filter(restaurant_id=restaurant_id)
+            # Fallback: si aucun plat trouvé pour ce restaurant, renvoyer les plats globaux (restaurant null)
+            try:
+                if not qs.exists():
+                    qs = MenuItem.objects.filter(restaurant__isnull=True)
+            except Exception:
+                pass
+
+        user = request.user
+        if user.is_authenticated and user.is_staff:
+            # Admin: voit tout (ou selon filtre restaurant)
+            return qs
+        # Public/clients: ne voir que les plats disponibles, avec fallback si aucun
+        public_qs = qs.filter(disponible=True)
+        try:
+            return public_qs if public_qs.exists() else qs
+        except Exception:
+            return public_qs
     
     def perform_create(self, serializer):
         """Associer automatiquement le restaurant de l'utilisateur"""
-        if self.request.user.is_authenticated and hasattr(self.request.user, 'userprofile'):
-            if self.request.user.userprofile.restaurant:
-                serializer.save(restaurant=self.request.user.userprofile.restaurant)
-            else:
-                # Pour les super admins sans restaurant spécifique
-                serializer.save()
+        # Pour l'instant, on laisse l'utilisateur spécifier le restaurant manuellement
+        serializer.save()
 
     @action(detail=True, methods=['post'])
     def upload_image(self, request, pk=None):
@@ -122,20 +151,15 @@ class IngredientViewSet(viewsets.ModelViewSet):
     def get_queryset(self):
         """Filtrer les ingrédients par restaurant de l'utilisateur"""
         user = self.request.user
-        if user.is_authenticated and hasattr(user, 'userprofile'):
-            if user.userprofile.role == 'admin' and user.userprofile.restaurant:
-                return Ingredient.objects.filter(restaurant=user.userprofile.restaurant)
-            elif user.userprofile.role == 'admin':
-                return Ingredient.objects.all()  # Super admin voit tout
+        if user.is_authenticated and user.is_staff:
+            # Admin: voir tous les ingrédients
+            return Ingredient.objects.all()
         return Ingredient.objects.all()
     
     def perform_create(self, serializer):
         """Associer automatiquement le restaurant de l'utilisateur"""
-        if self.request.user.is_authenticated and hasattr(self.request.user, 'userprofile'):
-            if self.request.user.userprofile.restaurant:
-                serializer.save(restaurant=self.request.user.userprofile.restaurant)
-            else:
-                serializer.save()
+        # Pour l'instant, on laisse l'utilisateur spécifier le restaurant manuellement
+        serializer.save()
 
     @action(detail=True, methods=['post'])
     def upload_image(self, request, pk=None):
@@ -163,12 +187,12 @@ class CustomDishViewSet(viewsets.ModelViewSet):
         """Filtrer les plats personnalisés selon l'utilisateur"""
         if self.request.user.is_authenticated:
             # Si l'utilisateur est admin, voir tous les plats
-            if hasattr(self.request.user, 'userprofile') and self.request.user.userprofile.role == 'admin':
+            if self.request.user.is_staff:
                 return CustomDish.objects.all()
-            # Sinon, voir seulement ses propres plats
-            return CustomDish.objects.filter(user=self.request.user)
-        # Utilisateurs anonymes peuvent seulement voir les plats publics
-        return CustomDish.objects.filter(is_public=True) if hasattr(CustomDish, 'is_public') else CustomDish.objects.none()
+            # Sinon, voir seulement les plats disponibles
+            return CustomDish.objects.filter(disponible=True)
+        # Utilisateurs anonymes peuvent seulement voir les plats disponibles
+        return CustomDish.objects.filter(disponible=True)
 
 class OrderViewSet(viewsets.ModelViewSet):
     queryset = Order.objects.all()
@@ -185,18 +209,11 @@ class OrderViewSet(viewsets.ModelViewSet):
         if self.request.user.is_authenticated:
             try:
                 # Personnel/Admin/Chef: accès élargi avec filtre restaurant optionnel
-                if hasattr(self.request.user, 'userprofile') and self.request.user.userprofile.role in ['admin', 'personnel', 'chef']:
+                if self.request.user.is_staff:
                     queryset = Order.objects.all()
                     restaurant_id = self.request.query_params.get('restaurant') or self.request.query_params.get('restaurant_id')
                     if restaurant_id:
                         queryset = queryset.filter(restaurant_id=restaurant_id)
-                    else:
-                        # Par défaut, si l'utilisateur est rattaché à un restaurant, filtrer dessus
-                        try:
-                            if self.request.user.userprofile.restaurant_id:
-                                queryset = queryset.filter(restaurant_id=self.request.user.userprofile.restaurant_id)
-                        except Exception:
-                            pass
                     return queryset
             except Exception:
                 pass
@@ -238,94 +255,75 @@ class OrderViewSet(viewsets.ModelViewSet):
         """Créer ou mettre à jour un panier"""
         try:
             data = request.data
+            print('[PANIER] Payload reçu:', data)
             user = request.user if request.user.is_authenticated else None
             phone = data.get('phone')
-            plats_ids = data.get('plats_ids', [])
-            prix_total = data.get('prix_total', 0)
+            items = data.get('items', [])
+            restaurant_id = data.get('restaurant_id')
             
-            # Validation
-            if not plats_ids:
-                return Response({'error': 'Aucun plat spécifié'}, status=400)
+            # Validations explicites pour éviter les 500
+            if not user and (not phone or str(phone).strip() == ''):
+                return Response({'error': 'Téléphone requis pour les utilisateurs non authentifiés'}, status=400)
+            if not items:
+                return Response({'error': 'Aucun item spécifié (items vide)'}, status=400)
+            if not restaurant_id:
+                return Response({'error': 'Restaurant requis'}, status=400)
             
-            if not user and not phone:
-                return Response({'error': 'Utilisateur ou téléphone requis'}, status=400)
+            # Calculer le prix total
+            total_amount = 0.0
+            for item in items:
+                prix = item.get('prix', 0)
+                quantity = item.get('quantity', 1)
+                if isinstance(prix, str):
+                    prix = float(prix)
+                total_amount += prix * quantity
             
             # Récupérer ou créer le panier
             if user:
                 panier, created = Order.objects.get_or_create(
                     user=user, 
                     status='panier',
-                    defaults={'prix_total': prix_total}
+                    restaurant_id=restaurant_id,
+                    defaults={'total_amount': total_amount, 'items': items}
                 )
             else:
                 panier, created = Order.objects.get_or_create(
                     phone=phone, 
                     user=None,
                     status='panier',
-                    defaults={'prix_total': prix_total}
+                    restaurant_id=restaurant_id,
+                    defaults={'total_amount': total_amount, 'items': items}
                 )
             
-            # Ajouter les plats
-            from .models import MenuItem, CustomDish, OrderItem
-            panier.order_items.all().delete()  # Vider le panier existant
-            
-            for plat_id in plats_ids:
-                try:
-                    # Essayer MenuItem d'abord (traité comme CustomDish)
-                    menu_item = MenuItem.objects.get(id=plat_id)
-                    
-                    # Trouver ou créer une base par défaut
-                    from .models import Base
-                    base_obj, _ = Base.objects.get_or_create(
-                        nom=menu_item.nom,
-                        defaults={
-                            'prix': menu_item.prix,
-                            'image': menu_item.image,
-                            'disponible': menu_item.disponible
-                        }
-                    )
-                    
-                    # Créer un CustomDish temporaire pour ce MenuItem
-                    custom_dish = CustomDish.objects.create(
-                        base=base_obj,
-                        prix=menu_item.prix
-                    )
-                    
-                    # Créer l'OrderItem
-                    OrderItem.objects.create(
-                        order=panier,
-                        custom_dish=custom_dish,
-                        quantity=1
-                    )
-                except MenuItem.DoesNotExist:
-                    try:
-                        # CustomDish existant
-                        custom_dish = CustomDish.objects.get(id=plat_id)
-                        OrderItem.objects.create(
-                            order=panier,
-                            custom_dish=custom_dish,
-                            quantity=1
-                        )
-                    except CustomDish.DoesNotExist:
-                        continue
-            
-            # Mettre à jour le prix
-            panier.prix_total = prix_total
-            panier.save()
+            # Mettre à jour le panier
+            if not created:
+                panier.items = items
+                panier.total_amount = total_amount
+                panier.restaurant_id = restaurant_id
+                if phone:
+                    panier.phone = phone
+                panier.save()
             
             serializer = self.get_serializer(panier)
-            return Response(serializer.data, status=201 if created else 200)
+            payload = serializer.data
+            return Response(payload, status=201 if created else 200)
             
         except Exception as e:
-            return Response({'error': str(e)}, status=400)
+            import traceback
+            print('[PANIER][ERROR]', str(e))
+            print(traceback.format_exc())
+            return Response({'error': str(e)}, status=500)
 
     @action(detail=True, methods=['post'], url_path='valider')
     def valider_panier(self, request, pk=None):
         order = self.get_object()
         if order.status != 'panier':
             return Response({'error': 'Commande déjà validée'}, status=400)
+        
+        # Mettre à jour le statut de la commande
         order.status = 'en_attente'
         order.save()
+        
         # Envoi notification push si possible
         user = order.user
         if user and hasattr(user, 'userprofile'):
@@ -335,12 +333,22 @@ class OrderViewSet(viewsets.ModelViewSet):
                     push_service.notify_single_device(
                         registration_id=user.userprofile.fcm_token,
                         message_title="Commande validée !",
-                        message_body=f"Votre commande #{order.id} a été validée et est en attente de préparation."
+                        message_body=f"Votre commande #{order.id} a été validée et est en cours de préparation."
                     )
             except Exception as e:
                 print(f"Erreur envoi notification FCM: {e}")
+        
+        # Notifier le personnel du restaurant
+        try:
+            self._notify_restaurant_staff(order.restaurant, title="Nouvelle commande", body=f"Commande #{order.id} validée.")
+        except Exception as e:
+            print(f"[FCM] Erreur notif staff: {e}")
+        
         serializer = self.get_serializer(order)
-        return Response({'commande': serializer.data, 'message': 'Commande validée'})
+        return Response({
+            'commande': serializer.data, 
+            'message': 'Commande validée avec succès'
+        })
 
     @action(detail=True, methods=['post'], url_path='update-status')
     def update_status(self, request, pk=None):
@@ -356,6 +364,31 @@ class OrderViewSet(viewsets.ModelViewSet):
         
         order.status = new_status
         order.save()
+        try:
+            OrderStatusLog.objects.create(order=order, status=new_status, message=f'status={new_status}')
+        except Exception:
+            pass
+
+        # Envoi SMS automatique si terminé
+        if new_status == 'termine':
+            try:
+                phone = getattr(order, 'phone', None)
+                if not phone and order.user and hasattr(order.user, 'userprofile'):
+                    phone = getattr(order.user.userprofile, 'phone', None)
+                if phone:
+                    # Normaliser (ajouter indicatif si manquant)
+                    code = getattr(settings, 'DEFAULT_SMS_COUNTRY_CODE', '+221')
+                    num = str(phone)
+                    if not num.startswith('+'):
+                        # garder uniquement les chiffres
+                        digits = ''.join([c for c in num if c.isdigit()])
+                        if not digits.startswith(code.replace('+','')):
+                            num = f"{code}{digits}"
+                        else:
+                            num = f"+{digits}"
+                    self._send_sms(num, f"Votre commande #{order.id} est terminée. Merci pour votre confiance !")
+            except Exception as e:
+                print(f"[SMS] Erreur post-statut termine: {e}")
         
         # Envoi notification push si possible
         user = order.user
@@ -371,12 +404,52 @@ class OrderViewSet(viewsets.ModelViewSet):
                     )
             except Exception as e:
                 print(f"Erreur envoi notification FCM: {e}")
+        # Notifier le personnel du restaurant pour certains statuts
+        try:
+            if new_status in ['en_attente', 'en_preparation', 'pret']:
+                self._notify_restaurant_staff(order.restaurant, title="Commande mise à jour", body=f"Commande #{order.id}: {new_status}")
+        except Exception as e:
+            print(f"[FCM] Erreur notif staff: {e}")
         
         serializer = self.get_serializer(order)
         return Response({
             'commande': serializer.data,
             'message': f'Statut mis à jour vers {new_status}'
         })
+
+    # --- Utilitaires internes ---
+    def _send_sms(self, phone: str, message: str):
+        try:
+            # Envoi via Twilio si configuré
+            from twilio.rest import Client  # type: ignore
+            account_sid = getattr(settings, 'TWILIO_ACCOUNT_SID', None)
+            auth_token = getattr(settings, 'TWILIO_AUTH_TOKEN', None)
+            from_number = getattr(settings, 'TWILIO_FROM_NUMBER', None)
+            if account_sid and auth_token and from_number:
+                client = Client(account_sid, auth_token)
+                client.messages.create(body=message, from_=from_number, to=phone)
+                return
+        except Exception as e:
+            print(f"[SMS] Erreur envoi SMS: {e}")
+        # Fallback: log console si non configuré
+        print(f"[SMS][FAKE] to={phone} msg={message}")
+
+    def _notify_restaurant_staff(self, restaurant, title: str, body: str):
+        # Fonction simplifiée pour éviter les erreurs liées aux champs supprimés
+        try:
+            # Utiliser is_staff au lieu du champ role
+            staff_users = User.objects.filter(is_staff=True, is_active=True)
+            staff_profiles = UserProfile.objects.filter(user__in=staff_users).exclude(fcm_token__isnull=True).exclude(fcm_token='')
+            if not staff_profiles:
+                return
+            push_service = FCMNotification(api_key=getattr(settings, 'FCM_SERVER_KEY', ''))
+            for prof in staff_profiles:
+                try:
+                    push_service.notify_single_device(registration_id=prof.fcm_token, message_title=title, message_body=body)
+                except Exception as e:
+                    print(f"[FCM] Erreur envoi staff {prof.user_id}: {e}")
+        except Exception as e:
+            print(f"[FCM] Erreur préparation staff list: {e}")
 
     def update(self, request, *args, **kwargs):
         order = self.get_object()
@@ -441,48 +514,14 @@ class OrderViewSet(viewsets.ModelViewSet):
         if not self._can_view_order(request, order):
             return Response({'error': 'Permission refusée'}, status=403)
         
-        # Historique des statuts (simulation)
+        # Historique simple basé sur le statut actuel
         status_history = [
             {
-                'status': 'panier',
+                'status': order.status,
                 'timestamp': order.created_at.isoformat(),
-                'message': 'Commande créée'
+                'message': f'Commande {order.status}'
             }
         ]
-        
-        if order.status != 'panier':
-            status_history.append({
-                'status': 'en_attente',
-                'timestamp': order.created_at.isoformat(),
-                'message': 'Commande validée, en attente de préparation'
-            })
-        
-        if order.status in ['en_preparation', 'pret', 'termine']:
-            from datetime import timedelta
-            prep_time = order.created_at + timedelta(minutes=5)
-            status_history.append({
-                'status': 'en_preparation',
-                'timestamp': prep_time.isoformat(),
-                'message': 'Préparation en cours'
-            })
-        
-        if order.status in ['pret', 'termine']:
-            from datetime import timedelta
-            ready_time = order.created_at + timedelta(minutes=25)
-            status_history.append({
-                'status': 'pret',
-                'timestamp': ready_time.isoformat(),
-                'message': 'Commande prête'
-            })
-        
-        if order.status == 'termine':
-            from datetime import timedelta
-            finish_time = order.created_at + timedelta(minutes=30)
-            status_history.append({
-                'status': 'termine',
-                'timestamp': finish_time.isoformat(),
-                'message': 'Commande livrée'
-            })
         
         serializer = self.get_serializer(order)
         return Response({
@@ -495,17 +534,14 @@ class OrderViewSet(viewsets.ModelViewSet):
         """Vérifier si l'utilisateur peut voir cette commande"""
         if request.user.is_authenticated:
             # Admin peut voir toutes les commandes
-            try:
-                if hasattr(request.user, 'userprofile') and request.user.userprofile.role in ['admin', 'personnel', 'chef']:
-                    return True
-            except:
-                pass
+            if request.user.is_staff:
+                return True
             # Utilisateur peut voir ses propres commandes
             if order.user == request.user:
                 return True
         
-        # Utilisateur anonyme peut voir via téléphone
-        phone = request.GET.get('phone')
+        # Utilisateur anonyme peut voir via téléphone (GET ou POST)
+        phone = request.GET.get('phone') or getattr(request, 'data', {}).get('phone')
         if phone and order.phone == phone and order.user is None:
             return True
         
@@ -533,11 +569,8 @@ class OrderViewSet(viewsets.ModelViewSet):
         """Vérifier si l'utilisateur peut modifier cette commande"""
         # Le personnel peut modifier toutes les commandes
         if request.user.is_authenticated:
-            try:
-                if hasattr(request.user, 'userprofile') and request.user.userprofile.role in ['admin', 'personnel', 'chef']:
-                    return True
-            except:
-                pass
+            if request.user.is_staff:
+                return True
             # L'utilisateur connecté peut modifier ses propres commandes
             if order.user == request.user:
                 return True
@@ -570,6 +603,49 @@ class OrderViewSet(viewsets.ModelViewSet):
         print(f"[DEBUG ORDERS] Token: {request.headers.get('Authorization')}")
         return super().list(request, *args, **kwargs)
 
+    @action(detail=False, methods=['get'], url_path='events')
+    def events(self, request):
+        """Flux d'événements (logs de statut) pour un restaurant (staff seulement)"""
+        user = request.user
+        if not user.is_authenticated:
+            return Response({'error': 'Auth requise'}, status=401)
+        if not user.is_staff:
+            return Response({'error': 'Permission refusée'}, status=403)
+
+        restaurant_id = request.GET.get('restaurant') or request.GET.get('restaurant_id')
+        qs = Order.objects.all()
+        if restaurant_id:
+            qs = qs.filter(restaurant_id=restaurant_id)
+        limit = int(request.GET.get('limit', '50'))
+        qs = qs.order_by('-created_at')[:max(1, min(limit, 200))]
+        data = [
+            {
+                'id': order.id,
+                'order_id': order.id,
+                'restaurant_id': getattr(order, 'restaurant_id', None),
+                'status': order.status,
+                'message': f'Commande {order.status}',
+                'created_at': order.created_at.isoformat(),
+            }
+            for order in qs
+        ]
+        return Response({'events': data})
+
+    @action(detail=True, methods=['post'], url_path='feedback')
+    def leave_feedback(self, request, pk=None):
+        """Permettre au client (auth ou anonyme via phone) de laisser un avis sur sa commande"""
+        # Ne pas utiliser self.get_object() pour éviter les filtres de get_queryset (anonymes)
+        try:
+            order = Order.objects.get(pk=pk)
+        except Order.DoesNotExist:
+            return Response({'error': 'Commande introuvable'}, status=404)
+        # Vérifier le droit de commenter (mêmes règles que _can_view_order)
+        if not self._can_view_order(request, order):
+            return Response({'error': 'Permission refusée'}, status=403)
+        
+        # Pour l'instant, retourner un message indiquant que les feedbacks ne sont pas encore implémentés
+        return Response({'message': 'Les feedbacks ne sont pas encore implémentés'}, status=501)
+
 class RestaurantViewSet(viewsets.ReadOnlyModelViewSet):
     queryset = Restaurant.objects.all()
     serializer_class = RestaurantSerializer
@@ -587,9 +663,15 @@ class RestaurantViewSet(viewsets.ReadOnlyModelViewSet):
             restaurant=restaurant,
             disponible=True
         ).order_by('type', 'nom')
+        # Fallback si aucun plat marqué disponible
+        if not menu_items.exists():
+            menu_items = MenuItem.objects.filter(restaurant=restaurant).order_by('type', 'nom')
+        # Fallback supplémentaires: plats globaux sans restaurant
+        if not menu_items.exists():
+            menu_items = MenuItem.objects.filter(restaurant__isnull=True, disponible=True).order_by('type', 'nom')
         
         from .serializers import MenuItemSerializer
-        serializer = MenuItemSerializer(menu_items, many=True)
+        serializer = MenuItemSerializer(menu_items, many=True, context={'request': request})
         return Response({
             'restaurant': RestaurantSerializer(restaurant).data,
             'menu': serializer.data
@@ -627,52 +709,14 @@ class BaseViewSet(viewsets.ModelViewSet):
     def get_queryset(self):
         """Filtrer les bases par restaurant de l'utilisateur"""
         user = self.request.user
-        if user.is_authenticated and hasattr(user, 'userprofile'):
-            if user.userprofile.role == 'admin' and user.userprofile.restaurant:
-                return Base.objects.filter(restaurant=user.userprofile.restaurant, disponible=True)
-            elif user.userprofile.role == 'admin':
-                return Base.objects.filter(disponible=True)  # Super admin voit tout
+        if user.is_authenticated and user.is_staff:
+            return Base.objects.filter(disponible=True)  # Admin voit tout
         return Base.objects.filter(disponible=True)
     
     def perform_create(self, serializer):
         """Associer automatiquement le restaurant de l'utilisateur"""
-        if self.request.user.is_authenticated and hasattr(self.request.user, 'userprofile'):
-            if self.request.user.userprofile.restaurant:
-                serializer.save(restaurant=self.request.user.userprofile.restaurant)
-            else:
-                serializer.save()
-
-class CustomTokenObtainPairView(TokenObtainPairView):
-    serializer_class = CustomTokenObtainPairSerializer
-
-    def post(self, request, *args, **kwargs):
-        import logging
-        logger = logging.getLogger(__name__)
-        logger.error(f"Payload reçu (connexion): {request.data}")
-        print(f"[DEBUG TOKEN] Payload reçu: {request.data}")
-        response = super().post(request, *args, **kwargs)
-        if response.status_code != 200:
-            logger.error(f"Erreur connexion: {response.data}")
-            print(f"[DEBUG TOKEN] Erreur: {response.data}")
-        return response
-
-@api_view(['POST'])
-@permission_classes([permissions.AllowAny])
-def register(request):
-    serializer = UserRegisterSerializer(data=request.data)
-    if serializer.is_valid():
-        user = serializer.save()
-        refresh = RefreshToken.for_user(user)
-        return Response({
-            'access': str(refresh.access_token),
-            'refresh': str(refresh),
-        }, status=status.HTTP_201_CREATED)
-    # Ajout de logs détaillés
-    import logging
-    logger = logging.getLogger(__name__)
-    logger.error(f"Erreur d'inscription: {serializer.errors}")
-    print(f"[DEBUG REGISTER] Erreurs serializer: {serializer.errors}")
-    return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+        # Pour l'instant, on laisse l'utilisateur spécifier le restaurant manuellement
+        serializer.save()
 
 @api_view(['POST'])
 @permission_classes([permissions.AllowAny])
@@ -756,8 +800,16 @@ def upload_image(request):
 @permission_classes([permissions.AllowAny])
 def pin_login(request):
     """Connexion par PIN pour le personnel"""
-    pin = request.data.get('pin')
-    phone = request.data.get('phone') or request.data.get('username')
+    def _normalize_phone(value):
+        if not value:
+            return None
+        import re
+        digits = re.sub(r'[^0-9]', '', str(value))
+        return digits
+
+    pin = request.data.get('pin') or request.data.get('pin_code')
+    phone_raw = request.data.get('phone') or request.data.get('username')
+    phone = _normalize_phone(phone_raw)
     if not pin:
         return Response({'error': 'PIN requis'}, status=400)
     
@@ -767,31 +819,51 @@ def pin_login(request):
         user_profile = None
         
         # Option A: Si le téléphone est fourni, chercher d'abord par téléphone exact (personnel uniquement)
-        if phone:
-            candidate = UserProfile.objects.filter(
-                role__in=['admin', 'personnel', 'chef'],
-                phone=phone
-            ).first()
+        if phone or phone_raw:
+            # Utiliser is_staff au lieu du champ role
+            staff_users = User.objects.filter(is_staff=True, is_active=True)
+            candidates = UserProfile.objects.filter(
+                user__in=staff_users
+            ).filter(
+                Q(phone=phone_raw) | Q(phone=phone) | Q(user__username=phone_raw) | Q(user__username=phone)
+            )
+            candidate = candidates.first()
             if candidate:
-                # Valider le PIN: champ dédié si présent, sinon derniers chiffres du téléphone
-                if getattr(candidate, 'pin_code', None):
-                    if str(candidate.pin_code) == str(pin):
-                        user_profile = candidate
-                else:
-                    # Vérifier que le PIN correspond aux derniers chiffres du téléphone
-                    if candidate.phone and str(candidate.phone).endswith(str(pin)):
-                        user_profile = candidate
+                # Valider le PIN: vérifier que le PIN correspond aux derniers chiffres du téléphone
+                cand_phone_norm = _normalize_phone(candidate.phone)
+                if cand_phone_norm and str(cand_phone_norm).endswith(str(pin)):
+                    user_profile = candidate
         
         # Option B: Fallback global si non trouvé (scanner le personnel et matcher sur suffixe du téléphone)
         if not user_profile:
             # Rechercher uniquement les profils du personnel (éviter les clients)
+            # Utiliser is_staff au lieu du champ role
+            staff_users = User.objects.filter(is_staff=True, is_active=True)
             staff_profiles = UserProfile.objects.filter(
-                role__in=['admin', 'personnel', 'chef']
+                user__in=staff_users
             )
             for profile in staff_profiles:
-                if profile.phone and profile.phone.endswith(pin):
+                # Vérifier que le PIN correspond aux derniers chiffres du téléphone
+                pnorm = _normalize_phone(profile.phone)
+                if pnorm and str(pnorm).endswith(str(pin)):
                     user_profile = profile
                     break
+
+        # Option C: Fallback par recherche de suffixe de téléphone unique
+        if not user_profile:
+            # Utiliser is_staff au lieu du champ role
+            staff_users = User.objects.filter(is_staff=True, is_active=True)
+            staff_profiles = UserProfile.objects.filter(user__in=staff_users)
+            
+            # Chercher un profil avec un téléphone qui se termine par le PIN
+            matching_profiles = []
+            for profile in staff_profiles:
+                pnorm = _normalize_phone(profile.phone)
+                if pnorm and str(pnorm).endswith(str(pin)):
+                    matching_profiles.append(profile)
+            
+            if len(matching_profiles) == 1:
+                user_profile = matching_profiles[0]
         
         if not user_profile:
             return Response({'error': 'PIN incorrect'}, status=401)
@@ -810,7 +882,7 @@ def pin_login(request):
             'user': {
                 'id': user.id,
                 'username': user.username,
-                'role': user_profile.role,
+                'role': 'admin' if user.is_staff else 'client',
                 'first_name': user.first_name,
                 'last_name': user.last_name,
             }

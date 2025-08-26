@@ -1,13 +1,22 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/foundation.dart' show kIsWeb, defaultTargetPlatform;
+import 'package:flutter/widgets.dart' show TargetPlatform;
 import 'package:provider/provider.dart';
 import 'restaurant_choice_page.dart';
 import 'pin_login_page.dart';
 import 'staff_login_page.dart';
 import 'providers/cart_provider.dart';
 import 'providers/menu_provider.dart';
+import 'providers/restaurant_provider.dart';
 import 'theme/app_theme.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
-void main() {
+void main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  
+  // Initialiser les préférences partagées
+  await SharedPreferences.getInstance();
+  
   runApp(KeurRestoApp());
 }
 
@@ -18,6 +27,7 @@ class KeurRestoApp extends StatelessWidget {
       providers: [
         ChangeNotifierProvider(create: (_) => CartProvider('')),
         ChangeNotifierProvider(create: (_) => MenuProvider('')),
+        ChangeNotifierProvider(create: (_) => RestaurantProvider()),
       ],
       child: MaterialApp(
         title: 'BOKDEJ',

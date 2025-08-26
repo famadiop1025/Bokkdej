@@ -43,9 +43,7 @@ class _AdminSettingsPageState extends State<AdminSettingsPage> {
 
   // Switches
   bool _accepterCommandesAnonymes = true;
-  bool _notificationsActivees = true;
-  bool _emailNotifications = true;
-  bool _smsNotifications = false;
+  // Notifications supprimées
   bool _livraisonActivee = false;
 
   @override
@@ -121,9 +119,7 @@ class _AdminSettingsPageState extends State<AdminSettingsPage> {
 
     setState(() {
       _accepterCommandesAnonymes = settings['accepter_commandes_anonymes'] ?? true;
-      _notificationsActivees = settings['notifications_activees'] ?? true;
-      _emailNotifications = settings['email_notifications'] ?? true;
-      _smsNotifications = settings['sms_notifications'] ?? false;
+      // Notifications supprimées
       _livraisonActivee = settings['livraison_activee'] ?? false;
     });
   }
@@ -143,9 +139,7 @@ class _AdminSettingsPageState extends State<AdminSettingsPage> {
           'commande_min': double.tryParse(_commandeMinController.text) ?? 0,
           'temps_preparation_defaut': int.tryParse(_tempsPreparationController.text) ?? 30,
           'accepter_commandes_anonymes': _accepterCommandesAnonymes,
-          'notifications_activees': _notificationsActivees,
-          'email_notifications': _emailNotifications,
-          'sms_notifications': _smsNotifications,
+          // Notifications supprimées
           'devise': _deviseController.text,
           'livraison_activee': _livraisonActivee,
           'frais_livraison': double.tryParse(_fraisLivraisonController.text) ?? 0,
@@ -255,7 +249,7 @@ class _AdminSettingsPageState extends State<AdminSettingsPage> {
           const SizedBox(height: 24),
           _buildOrderSettingsSection(),
           const SizedBox(height: 24),
-          _buildNotificationSettingsSection(),
+
           const SizedBox(height: 24),
           _buildDeliverySettingsSection(),
           const SizedBox(height: 24),
@@ -387,72 +381,6 @@ class _AdminSettingsPageState extends State<AdminSettingsPage> {
                   _accepterCommandesAnonymes = value;
                 });
               },
-              activeColor: Colors.green,
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  Widget _buildNotificationSettingsSection() {
-    return Card(
-      elevation: 2,
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-      child: Padding(
-        padding: const EdgeInsets.all(16),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
-              children: [
-                Icon(Icons.notifications, color: Colors.purple, size: 24),
-                const SizedBox(width: 8),
-                const Text(
-                  'Paramètres de Notification',
-                  style: TextStyle(
-                    fontSize: 18,
-                    fontWeight: FontWeight.bold,
-                  ),
-                ),
-              ],
-            ),
-            const SizedBox(height: 16),
-            SwitchListTile(
-              title: const Text('Notifications activées'),
-              subtitle: const Text('Activer toutes les notifications'),
-              value: _notificationsActivees,
-              onChanged: (value) {
-                setState(() {
-                  _notificationsActivees = value;
-                });
-              },
-              activeColor: Colors.green,
-            ),
-            SwitchListTile(
-              title: const Text('Notifications par email'),
-              subtitle: const Text('Recevoir les notifications par email'),
-              value: _emailNotifications,
-              onChanged: _notificationsActivees
-                  ? (value) {
-                      setState(() {
-                        _emailNotifications = value;
-                      });
-                    }
-                  : null,
-              activeColor: Colors.green,
-            ),
-            SwitchListTile(
-              title: const Text('Notifications par SMS'),
-              subtitle: const Text('Recevoir les notifications par SMS'),
-              value: _smsNotifications,
-              onChanged: _notificationsActivees
-                  ? (value) {
-                      setState(() {
-                        _smsNotifications = value;
-                      });
-                    }
-                  : null,
               activeColor: Colors.green,
             ),
           ],

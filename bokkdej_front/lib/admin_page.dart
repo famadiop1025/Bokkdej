@@ -1,20 +1,43 @@
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
+import 'package:flutter/foundation.dart';
+import 'dart:async';
 import 'package:flutter/services.dart';
 import 'package:image_picker/image_picker.dart';
 import 'dart:io';
 import 'dart:convert';
 import 'main.dart';
 
+
+import 'admin_stats_page.dart' as stats;
+import 'widgets/safe_image_widget.dart';
+import 'polling_settings_page.dart';
+import 'services/polling_config.dart';
+
 String getApiBaseUrl() {
   return 'http://localhost:8000';
 }
 
+Future<http.MultipartFile> xFileToMultipart(XFile file, {String fieldName = 'image'}) async {
+  if (kIsWeb) {
+    final bytes = await file.readAsBytes();
+    final String filename = (file.name.isNotEmpty) ? file.name : 'upload';
+    return http.MultipartFile.fromBytes(fieldName, bytes, filename: filename);
+  } else {
+    return await http.MultipartFile.fromPath(fieldName, file.path);
+  }
+}
+
+String sanitizePhone(String input) {
+  // Conserver uniquement les chiffres; le backend limite généralement la longueur
+  return input.replaceAll(RegExp(r'[^0-9]'), '');
+}
+
 class AdminPage extends StatefulWidget {
   final String token;
-  final String userRole;
+  final String? userRole; // Optionnel maintenant
   
-  AdminPage({required this.token, required this.userRole});
+  AdminPage({required this.token, this.userRole});
 
   @override
   _AdminPageState createState() => _AdminPageState();
@@ -23,8 +46,9 @@ class AdminPage extends StatefulWidget {
 class _AdminPageState extends State<AdminPage> {
   int _selectedIndex = 0;
   String? userRole;
+  Timer? _pollTimer;
 
-  late final List<Widget> _pages;
+  List<Widget> _pages = [];
 
   final List<String> _titles = [
     'Tableau de Bord',
@@ -38,15 +62,46 @@ class _AdminPageState extends State<AdminPage> {
   @override
   void initState() {
     super.initState();
-    userRole = widget.userRole;
+    // Utiliser le rôle fourni ou par défaut 'admin' pour la partie admin
+    userRole = widget.userRole ?? 'admin';
     _pages = [
       AdminDashboard(),
       AdminRestaurantManagement(token: widget.token),
       AdminMenuManagement(),
-      AdminOrdersManagement(),
+      AdminOrdersManagement(token: widget.token),
       AdminUsersManagement(token: widget.token),
-      AdminStatsPage(),
+      stats.AdminStatsPage(token: widget.token),
     ];
+    // Notifications supprimées
+    _loadData();
+    _initializePolling();
+  }
+
+  Future<void> _loadData() async {
+    // Charger les données initiales
+    setState(() {});
+  }
+
+  Future<void> _smartLoadData() async {
+    // Mise à jour intelligente des données
+    setState(() {});
+  }
+
+  Future<void> _initializePolling() async {
+    // Vérifier si le polling est activé
+    final isEnabled = await PollingConfig.isPollingEnabled();
+    if (isEnabled) {
+      final interval = await PollingConfig.getDashboardInterval();
+      _pollTimer = Timer.periodic(Duration(seconds: interval), (_) => _smartLoadData());
+    }
+  }
+
+
+
+  @override
+  void dispose() {
+    _pollTimer?.cancel();
+    super.dispose();
   }
 
   Future<void> _logout() async {
@@ -576,29 +631,51 @@ class _AdminMenuManagementState extends State<AdminMenuManagement> {
 
 // Gestion Commandes
 class AdminOrdersManagement extends StatefulWidget {
+  final String token;
+  const AdminOrdersManagement({Key? key, required this.token}) : super(key: key);
   @override
   _AdminOrdersManagementState createState() => _AdminOrdersManagementState();
 }
 
 class _AdminOrdersManagementState extends State<AdminOrdersManagement> {
-  List<Map<String, dynamic>> orders = [
-    {
-      'id': 1,
-      'client': 'Client A',
-      'total': 1500,
-      'statut': 'en_attente',
-      'items': ['Omelette au fromage', 'Riz au poisson'],
-      'date': '10/08/2025 - 14:30',
-    },
-    {
-      'id': 2,
-      'client': 'Client B',
-      'total': 800,
-      'statut': 'en_preparation',
-      'items': ['Riz au poisson'],
-      'date': '10/08/2025 - 14:15',
-    },
-  ];
+  bool _loading = true;
+  String? _error;
+  List<Map<String, dynamic>> orders = [];
+
+  @override
+  void initState() {
+    super.initState();
+    _fetchOrders();
+  }
+
+  Future<void> _fetchOrders() async {
+    setState(() { _loading = true; _error = null; });
+    try {
+      final uri = Uri.parse('${getApiBaseUrl()}/api/orders/');
+      final resp = await http.get(uri, headers: {'Authorization': 'Bearer ${widget.token}'});
+      if (resp.statusCode == 200) {
+        final List<dynamic> raw = json.decode(resp.body);
+        final normalized = raw.map<Map<String, dynamic>>((o) {
+          final m = Map<String, dynamic>.from(o as Map);
+          return {
+            'id': m['id'],
+            'client': m['user'] ?? '',
+            'total': m['prix_total'] ?? 0,
+            'statut': m['status'] ?? 'en_attente',
+            'items': (m['order_items'] is List)
+              ? (m['order_items'] as List).map((it) => (it as Map)['custom_dish'] ?? (it as Map)['base'] ?? 'Plat').toList()
+              : <String>[],
+            'date': m['created_at'] ?? '',
+          };
+        }).toList();
+        setState(() { orders = normalized; _loading = false; });
+      } else {
+        throw Exception('Erreur API: ${resp.statusCode}');
+      }
+    } catch (e) {
+      setState(() { _error = e.toString(); _loading = false; });
+    }
+  }
 
   String _getStatusText(String status) {
     switch (status) {
@@ -634,13 +711,12 @@ class _AdminOrdersManagementState extends State<AdminOrdersManagement> {
         children: [
           Padding(
             padding: EdgeInsets.all(16),
-            child: Text(
-              'Gestion des Commandes',
-          style: TextStyle(
-                fontSize: 24,
-            fontWeight: FontWeight.bold,
-                color: Color(0xFF2C2C2C),
-              ),
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                Text('Gestion des Commandes', style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold, color: Color(0xFF2C2C2C))),
+                OutlinedButton.icon(onPressed: _fetchOrders, icon: Icon(Icons.refresh), label: Text('Actualiser')),
+              ],
             ),
           ),
           Expanded(
@@ -696,21 +772,21 @@ class _AdminOrdersManagementState extends State<AdminOrdersManagement> {
                           children: [
                             if (order['statut'] == 'en_attente')
                               ElevatedButton(
-                                onPressed: () => _updateOrderStatus(index, 'en_preparation'),
+                                onPressed: () => _updateOrderStatus(order['id'], 'en_preparation'),
                                 child: Text('Accepter'),
                                 style: ElevatedButton.styleFrom(backgroundColor: Colors.green),
                               ),
                             if (order['statut'] == 'en_preparation')
                               ElevatedButton(
-                                onPressed: () => _updateOrderStatus(index, 'pret'),
+                                onPressed: () => _updateOrderStatus(order['id'], 'pret'),
                                 child: Text('Marquer Prêt'),
                                 style: ElevatedButton.styleFrom(backgroundColor: Colors.blue),
                               ),
                             if (order['statut'] == 'pret')
                               ElevatedButton(
-                                onPressed: () => _updateOrderStatus(index, 'livre'),
-                                child: Text('Marquer Livré'),
-                                style: ElevatedButton.styleFrom(backgroundColor: Color(0xFFFFD700)),
+                                onPressed: () => _updateOrderStatus(order['id'], 'termine'),
+                                child: Text('Terminer'),
+                                style: ElevatedButton.styleFrom(backgroundColor: Color(0xFFFFD700), foregroundColor: Color(0xFF2C2C2C)),
                               ),
                             ElevatedButton(
             onPressed: () {
@@ -1015,8 +1091,8 @@ class _AdminRestaurantManagementState extends State<AdminRestaurantManagement> {
                               child: SizedBox(
                                 width: 60,
                                 height: 60,
-                                child: (restaurant['logo_url'] ?? '').toString().isNotEmpty
-                                  ? Image.network(restaurant['logo_url'], fit: BoxFit.cover)
+                                child: ((restaurant['logo_url'] ?? restaurant['logo']) ?? '').toString().isNotEmpty
+                                  ? Image.network(((restaurant['logo_url'] ?? restaurant['logo']) as String).toString(), fit: BoxFit.cover)
                                   : Container(
                                       color: Color(0xFFFFD700).withOpacity(0.3),
                                       child: Icon(Icons.business, color: Color(0xFF2C2C2C), size: 30),
@@ -1036,27 +1112,10 @@ class _AdminRestaurantManagementState extends State<AdminRestaurantManagement> {
                                     ),
                                   ),
                                   SizedBox(height: 4),
-                                  Text(
-                                    '📍 ${restaurant['adresse']}',
-                                    style: TextStyle(
-                                      fontSize: 14,
-                                      color: Colors.grey.shade600,
-                                    ),
-                                  ),
-                                  Text(
-                                    '📞 ${restaurant['telephone']}',
-                                    style: TextStyle(
-                                      fontSize: 14,
-                                      color: Colors.grey.shade600,
-                                    ),
-                                  ),
-                                  if (restaurant['email'].isNotEmpty) Text(
-                                    '✉️ ${restaurant['email']}',
-                                    style: TextStyle(
-                                      fontSize: 14,
-                                      color: Colors.grey.shade600,
-                                    ),
-                                  ),
+                                  Row(children: [Icon(Icons.location_on, size: 16, color: Colors.grey.shade700), SizedBox(width: 6), Expanded(child: Text('${restaurant['adresse']}', style: TextStyle(fontSize: 14, color: Colors.grey.shade600), overflow: TextOverflow.ellipsis))]),
+                                  Row(children: [Icon(Icons.phone, size: 16, color: Colors.grey.shade700), SizedBox(width: 6), Expanded(child: Text('${restaurant['telephone']}', style: TextStyle(fontSize: 14, color: Colors.grey.shade600), overflow: TextOverflow.ellipsis))]),
+                                  if (restaurant['email'].isNotEmpty)
+                                    Row(children: [Icon(Icons.email, size: 16, color: Colors.grey.shade700), SizedBox(width: 6), Expanded(child: Text('${restaurant['email']}', style: TextStyle(fontSize: 14, color: Colors.grey.shade600), overflow: TextOverflow.ellipsis))]),
                                   SizedBox(height: 8),
                                   Row(
                                     children: [
@@ -1086,18 +1145,20 @@ class _AdminRestaurantManagementState extends State<AdminRestaurantManagement> {
                                     ],
                                   ),
                                   SizedBox(height: 4),
-                                  Text(
-                                    'Créé le: ${restaurant['date_creation']}',
-                                    style: TextStyle(
-                                      fontSize: 12,
-                                      color: Colors.grey.shade500,
-                                    ),
-                                  ),
+                                  Row(children: [Icon(Icons.calendar_today, size: 14, color: Colors.grey.shade600), SizedBox(width: 6), Text('Créé le: ${restaurant['date_creation']}', style: TextStyle(fontSize: 12, color: Colors.grey.shade500))]),
                                 ],
                               ),
                             ),
                             Column(
                               children: [
+                                IconButton(
+                                  onPressed: () async {
+                                    await _uploadRestaurantLogo(restaurant['id']);
+                                    await _loadRestaurantsFromApi();
+                                  },
+                                  icon: Icon(Icons.image, color: Colors.purple),
+                                  tooltip: 'Uploader logo',
+                                ),
                                 IconButton(
                                   onPressed: () => _openRestaurantDashboard(restaurant),
                                   icon: Icon(Icons.dashboard, color: Color(0xFFFFD700)),
@@ -1323,7 +1384,7 @@ class _AdminRestaurantManagementState extends State<AdminRestaurantManagement> {
           ..headers['Authorization'] = 'Bearer ${widget.token}'
           ..fields['model_type'] = 'restaurant'
           ..fields['item_id'] = restaurantId.toString()
-          ..files.add(await http.MultipartFile.fromPath('image', file.path));
+          ..files.add(await xFileToMultipart(file));
         final resp = await request.send();
         if (resp.statusCode == 200) {
           ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Logo uploadé'), backgroundColor: Colors.green));
@@ -1410,7 +1471,7 @@ class _AdminRestaurantManagementState extends State<AdminRestaurantManagement> {
                   body: json.encode({
                     'nom': nameCtrl.text,
                     'adresse': addrCtrl.text,
-                    'telephone': phoneCtrl.text,
+                    'telephone': sanitizePhone(phoneCtrl.text).substring(0, sanitizePhone(phoneCtrl.text).length.clamp(0, 20)),
                     'email': emailCtrl.text,
                     'statut': statut,
                     'actif': actif,
@@ -1421,7 +1482,14 @@ class _AdminRestaurantManagementState extends State<AdminRestaurantManagement> {
                   await _loadRestaurantsFromApi();
                   ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Restaurant mis à jour'), backgroundColor: Colors.green));
                 } else {
-                  throw Exception('Erreur API: ${resp.statusCode}');
+                  String msg = 'Erreur API: ${resp.statusCode}';
+                  try {
+                    final b = json.decode(resp.body);
+                    msg = '$msg\n${const JsonEncoder.withIndent('  ').convert(b)}';
+                  } catch (_) {
+                    if (resp.body.isNotEmpty) msg = '$msg\n${resp.body}';
+                  }
+                  throw Exception(msg);
                 }
               } catch (e) {
                 ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Erreur: $e'), backgroundColor: Colors.red));
@@ -1462,7 +1530,7 @@ class _AdminRestaurantManagementState extends State<AdminRestaurantManagement> {
         ..headers['Authorization'] = 'Bearer ${widget.token}'
         ..fields['model_type'] = 'restaurant'
         ..fields['item_id'] = restaurantId.toString()
-        ..files.add(await http.MultipartFile.fromPath('image', file.path));
+        ..files.add(await xFileToMultipart(file));
       final response = await request.send();
       if (response.statusCode == 200) {
         ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Logo mis à jour'), backgroundColor: Colors.green));
@@ -1529,9 +1597,7 @@ class _AdminRestaurantManagementState extends State<AdminRestaurantManagement> {
                   headers: {'Authorization': 'Bearer ${widget.token}'},
                 );
                 if (resp.statusCode == 204) {
-                  setState(() {
-                    restaurants.removeWhere((r) => r['id'] == restaurant['id']);
-                  });
+                  await _loadRestaurantsFromApi();
                   ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Restaurant supprimé'), backgroundColor: Colors.green));
                 } else {
                   throw Exception('Erreur API: ${resp.statusCode}');
@@ -1570,16 +1636,49 @@ class _RestaurantDashboardState extends State<RestaurantDashboard> {
     'Personnel',
     'Statistiques',
   ];
+  Map<String, dynamic>? _restaurant; // détails actualisés
 
   @override
   void initState() {
     super.initState();
+    _restaurant = Map<String, dynamic>.from(widget.restaurant);
+    _rebuildPages();
+    _refreshRestaurant();
+  }
+
+  Future<void> _refreshRestaurant() async {
+    try {
+      final id = widget.restaurant['id'];
+      var resp = await http.get(
+        Uri.parse('${getApiBaseUrl()}/api/admin/restaurants/$id/'),
+        headers: {'Authorization': 'Bearer ${widget.token}'},
+      );
+      if (resp.statusCode == 200) {
+        setState(() {
+          _restaurant = json.decode(resp.body) as Map<String, dynamic>;
+          _rebuildPages();
+        });
+        return;
+      }
+      // Fallback public si l'endpoint admin n'est pas accessible pour ce rôle
+      resp = await http.get(Uri.parse('${getApiBaseUrl()}/api/restaurants/$id/'));
+      if (resp.statusCode == 200) {
+        setState(() {
+          _restaurant = json.decode(resp.body) as Map<String, dynamic>;
+          _rebuildPages();
+        });
+      }
+    } catch (_) {}
+  }
+
+  void _rebuildPages() {
+    if (_restaurant == null) return;
     _pages = [
-      RestaurantSpecificDashboard(restaurant: widget.restaurant, token: widget.token),
-      RestaurantSpecificMenu(restaurant: widget.restaurant, token: widget.token),
-      RestaurantSpecificOrders(restaurant: widget.restaurant, token: widget.token),
-      RestaurantSpecificStaff(restaurant: widget.restaurant, token: widget.token),
-      RestaurantSpecificStats(restaurant: widget.restaurant, token: widget.token),
+      RestaurantSpecificDashboard(restaurant: _restaurant!, token: widget.token),
+      RestaurantSpecificMenu(restaurant: _restaurant!, token: widget.token),
+      RestaurantSpecificOrders(restaurant: _restaurant!, token: widget.token),
+      RestaurantSpecificStaff(restaurant: _restaurant!, token: widget.token),
+      stats.AdminStatsPage(token: widget.token, restaurantId: _restaurant!['id']),
     ];
   }
 
@@ -1587,9 +1686,47 @@ class _RestaurantDashboardState extends State<RestaurantDashboard> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: Text('${widget.restaurant['nom']} - ${_titles[_selectedIndex]}'),
+        title: Row(
+          children: [
+            ClipRRect(
+              borderRadius: BorderRadius.circular(6),
+              child: SizedBox(
+                width: 28,
+                height: 28,
+                child: (((_restaurant?['logo_url'] ?? _restaurant?['logo']) ?? '') as String).toString().isNotEmpty
+                  ? Image.network(((_restaurant?['logo_url'] ?? _restaurant?['logo']) as String).toString(), fit: BoxFit.cover)
+                  : Container(color: Colors.white.withOpacity(0.3), child: Icon(Icons.business, size: 18, color: Color(0xFF2C2C2C))),
+              ),
+            ),
+            SizedBox(width: 8),
+            Expanded(
+              child: Text(
+                '${(_restaurant?['nom'] ?? widget.restaurant['nom'] ?? 'Restaurant')} - ${_titles[_selectedIndex]}',
+                overflow: TextOverflow.ellipsis,
+              ),
+            ),
+          ],
+        ),
         backgroundColor: Color(0xFFFFD700),
         foregroundColor: Color(0xFF2C2C2C),
+        actions: [
+          // Notifications supprimées
+          // Bouton paramètres de polling
+          IconButton(
+            tooltip: 'Paramètres de mise à jour',
+            onPressed: () async {
+              final result = await Navigator.push(
+                context,
+                MaterialPageRoute(builder: (_) => PollingSettingsPage()),
+              );
+              // Si les paramètres ont changé, recharger les composants
+              if (result == true) {
+                setState(() {});
+              }
+            },
+            icon: Icon(Icons.settings),
+          ),
+        ],
       ),
       body: _pages[_selectedIndex],
       bottomNavigationBar: BottomNavigationBar(
@@ -1647,11 +1784,91 @@ class _RestaurantSpecificDashboardState extends State<RestaurantSpecificDashboar
   int _ordersToday = 0;
   int _staffCount = 0;
   double _revenueToday = 0.0;
+  Timer? _pollTimer;
+  
+  // Valeurs précédentes pour éviter les rechargements inutiles
+  int _previousMenuCount = 0;
+  int _previousOrdersToday = 0;
+  int _previousStaffCount = 0;
+  double _previousRevenueToday = 0.0;
 
   @override
   void initState() {
     super.initState();
     _loadData();
+    _initializePolling();
+  }
+
+  Future<void> _initializePolling() async {
+    // Vérifier si le polling est activé
+    final isEnabled = await PollingConfig.isPollingEnabled();
+    if (isEnabled) {
+      final interval = await PollingConfig.getDashboardInterval();
+      _pollTimer = Timer.periodic(Duration(seconds: interval), (_) => _smartLoadData());
+    }
+  }
+
+  // Méthode intelligente qui ne recharge que si nécessaire
+  Future<void> _smartLoadData() async {
+    try {
+      final restaurantId = widget.restaurant['id'];
+      
+      // 1) Menu count (public)
+      final menuResp = await http.get(Uri.parse('${getApiBaseUrl()}/api/restaurants/$restaurantId/menu/'));
+      if (menuResp.statusCode == 200) {
+        final data = json.decode(menuResp.body);
+        final List<dynamic> menu = data['menu'] ?? [];
+        int newMenuCount = menu.length;
+        
+        // 2) Staff count (admin, filtré par restaurant)
+        final staffResp = await http.get(
+          Uri.parse('${getApiBaseUrl()}/api/admin/personnel/?restaurant=$restaurantId'),
+          headers: {'Authorization': 'Bearer ${widget.token}'},
+        );
+        int newStaffCount = 0;
+        if (staffResp.statusCode == 200) {
+          final List<dynamic> staff = json.decode(staffResp.body);
+          newStaffCount = staff.length;
+        }
+
+        // 3) Statistiques globales
+        final statsResp = await http.get(
+          Uri.parse('${getApiBaseUrl()}/api/admin/statistics/?restaurant=$restaurantId'),
+          headers: {'Authorization': 'Bearer ${widget.token}'},
+        );
+        int newOrdersToday = 0;
+        double newRevenueToday = 0.0;
+        if (statsResp.statusCode == 200) {
+          final stats = json.decode(statsResp.body);
+          newOrdersToday = (stats['orders']?['today'] ?? 0) as int;
+          newRevenueToday = (stats['revenue']?['today'] ?? 0).toDouble();
+        }
+        
+        // Vérifier si les données ont vraiment changé
+        bool hasChanges = (newMenuCount != _previousMenuCount ||
+                          newOrdersToday != _previousOrdersToday ||
+                          newStaffCount != _previousStaffCount ||
+                          newRevenueToday != _previousRevenueToday);
+        
+        if (hasChanges) {
+          setState(() {
+            _menuCount = newMenuCount;
+            _ordersToday = newOrdersToday;
+            _staffCount = newStaffCount;
+            _revenueToday = newRevenueToday;
+            
+            // Mettre à jour les valeurs précédentes
+            _previousMenuCount = newMenuCount;
+            _previousOrdersToday = newOrdersToday;
+            _previousStaffCount = newStaffCount;
+            _previousRevenueToday = newRevenueToday;
+          });
+        }
+      }
+    } catch (e) {
+      // En cas d'erreur, ne pas afficher d'erreur pour le polling silencieux
+      print('Dashboard polling error: $e');
+    }
   }
 
   Future<void> _loadData() async {
@@ -1667,6 +1884,7 @@ class _RestaurantSpecificDashboardState extends State<RestaurantSpecificDashboar
         final data = json.decode(menuResp.body);
         final List<dynamic> menu = data['menu'] ?? [];
         _menuCount = menu.length;
+        _previousMenuCount = _menuCount;
       }
 
       // 2) Staff count (admin, filtré par restaurant)
@@ -1677,6 +1895,7 @@ class _RestaurantSpecificDashboardState extends State<RestaurantSpecificDashboar
       if (staffResp.statusCode == 200) {
         final List<dynamic> staff = json.decode(staffResp.body);
         _staffCount = staff.length;
+        _previousStaffCount = _staffCount;
       }
 
       // 3) Statistiques globales (au moins pour aujourd'hui)
@@ -1688,6 +1907,8 @@ class _RestaurantSpecificDashboardState extends State<RestaurantSpecificDashboar
         final stats = json.decode(statsResp.body);
         _ordersToday = (stats['orders']?['today'] ?? 0) as int;
         _revenueToday = (stats['revenue']?['today'] ?? 0).toDouble();
+        _previousOrdersToday = _ordersToday;
+        _previousRevenueToday = _revenueToday;
       }
 
       setState(() {
@@ -1699,6 +1920,12 @@ class _RestaurantSpecificDashboardState extends State<RestaurantSpecificDashboar
         _loading = false;
       });
     }
+  }
+
+  @override
+  void dispose() {
+    _pollTimer?.cancel();
+    super.dispose();
   }
 
   @override
@@ -1747,6 +1974,29 @@ class _RestaurantSpecificDashboardState extends State<RestaurantSpecificDashboar
                 color: Color(0xFF2C2C2C),
               ),
             ),
+            SizedBox(height: 8),
+            // Indicateur "Live" pour montrer que les données sont mises à jour
+            Row(
+              children: [
+                Container(
+                  width: 8,
+                  height: 8,
+                  decoration: BoxDecoration(
+                    color: Colors.green,
+                    shape: BoxShape.circle,
+                  ),
+                ),
+                SizedBox(width: 8),
+                Text(
+                  'Données mises à jour en temps réel',
+                  style: TextStyle(
+                    fontSize: 12,
+                    color: Colors.green.shade700,
+                    fontStyle: FontStyle.italic,
+                  ),
+                ),
+              ],
+            ),
             SizedBox(height: 24),
             Expanded(
               child: GridView.count(
@@ -1776,12 +2026,12 @@ class _RestaurantSpecificDashboardState extends State<RestaurantSpecificDashboar
                       ),
                     ),
                     SizedBox(height: 16),
-                    Text('📍 Adresse: ${restaurant['adresse']}'),
-                    Text('📞 Téléphone: ${restaurant['telephone']}'),
-                    if (restaurant['email'].toString().isNotEmpty) 
-                      Text('✉️ Email: ${restaurant['email']}'),
+                    Row(children: [Icon(Icons.location_on, size: 16, color: Colors.grey.shade700), SizedBox(width: 6), Expanded(child: Text('Adresse: ${restaurant['adresse']}', overflow: TextOverflow.ellipsis))]),
+                    Row(children: [Icon(Icons.phone, size: 16, color: Colors.grey.shade700), SizedBox(width: 6), Expanded(child: Text('Téléphone: ${restaurant['telephone']}', overflow: TextOverflow.ellipsis))]),
+                    if (restaurant['email'].toString().isNotEmpty)
+                      Row(children: [Icon(Icons.email, size: 16, color: Colors.grey.shade700), SizedBox(width: 6), Expanded(child: Text('Email: ${restaurant['email']}', overflow: TextOverflow.ellipsis))]),
                     if (restaurant['date_creation'] != null)
-                      Text('📅 Créé le: ${restaurant['date_creation']}'),
+                      Row(children: [Icon(Icons.calendar_today, size: 16, color: Colors.grey.shade700), SizedBox(width: 6), Text('Créé le: ${restaurant['date_creation']}')]),
                   ],
                 ),
               ),
@@ -2402,7 +2652,7 @@ class _RestaurantSpecificMenuState extends State<RestaurantSpecificMenu> {
         ..headers['Authorization'] = 'Bearer ${widget.token}'
         ..fields['model_type'] = 'ingredient'
         ..fields['item_id'] = itemId.toString()
-        ..files.add(await http.MultipartFile.fromPath('image', file.path));
+        ..files.add(await xFileToMultipart(file));
       final response = await request.send();
       if (response.statusCode == 200) {
         ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Image uploadée'), backgroundColor: Colors.green));
@@ -2648,7 +2898,7 @@ class _RestaurantSpecificMenuState extends State<RestaurantSpecificMenu> {
         ..headers['Authorization'] = 'Bearer ${widget.token}'
         ..fields['model_type'] = 'base'
         ..fields['item_id'] = itemId.toString()
-        ..files.add(await http.MultipartFile.fromPath('image', file.path));
+        ..files.add(await xFileToMultipart(file));
       final response = await request.send();
       if (response.statusCode == 200) { ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Image uploadée'), backgroundColor: Colors.green)); }
       else { throw Exception('Erreur API: ${response.statusCode}'); }
@@ -2753,6 +3003,12 @@ class _RestaurantSpecificMenuState extends State<RestaurantSpecificMenu> {
     String typeValue = 'dej';
     final descCtrl = TextEditingController();
     int? categoryValue = _categoryId;
+    final prepCtrl = TextEditingController();
+    final calCtrl = TextEditingController();
+    bool disponible = true;
+    bool populaire = false;
+    bool platDuJour = false;
+    XFile? pickedImage;
     await showDialog(
       context: context,
       builder: (_) => AlertDialog(
@@ -2787,6 +3043,26 @@ class _RestaurantSpecificMenuState extends State<RestaurantSpecificMenu> {
               ),
               SizedBox(height: 8),
               TextField(controller: descCtrl, decoration: InputDecoration(labelText: 'Description'), maxLines: 2),
+              SizedBox(height: 8),
+              TextField(controller: prepCtrl, decoration: InputDecoration(labelText: 'Temps de préparation (min)'), keyboardType: TextInputType.number),
+              SizedBox(height: 8),
+              TextField(controller: calCtrl, decoration: InputDecoration(labelText: 'Calories'), keyboardType: TextInputType.number),
+              SizedBox(height: 8),
+              SwitchListTile(value: disponible, onChanged: (v){ disponible = v; (context as Element).markNeedsBuild(); }, title: Text('Disponible')),
+              SwitchListTile(value: populaire, onChanged: (v){ populaire = v; (context as Element).markNeedsBuild(); }, title: Text('Populaire')),
+              SwitchListTile(value: platDuJour, onChanged: (v){ platDuJour = v; (context as Element).markNeedsBuild(); }, title: Text('Plat du jour')),
+              SizedBox(height: 8),
+              Row(children:[
+                ElevatedButton.icon(onPressed: () async {
+                  try {
+                    final picker = ImagePicker();
+                    final img = await picker.pickImage(source: ImageSource.gallery);
+                    if (img != null) { pickedImage = img; (context as Element).markNeedsBuild(); }
+                  } catch(_) {}
+                }, icon: Icon(Icons.image), label: Text('Image')),
+                SizedBox(width: 8),
+                if (pickedImage != null) Expanded(child: Text(pickedImage!.name, overflow: TextOverflow.ellipsis)),
+              ])
             ],
           ),
         ),
@@ -2807,11 +3083,27 @@ class _RestaurantSpecificMenuState extends State<RestaurantSpecificMenu> {
                     'description': descCtrl.text,
                     'restaurant': widget.restaurant['id'],
                     if (categoryValue != null) 'category': categoryValue,
-                    'disponible': true,
-                    'populaire': false,
+                    'disponible': disponible,
+                    'populaire': populaire,
+                    'plat_du_jour': platDuJour,
+                    'temps_preparation': int.tryParse(prepCtrl.text ?? '15') ?? 15,
+                    'calories': int.tryParse(calCtrl.text ?? '0') ?? 0,
                   }),
                 );
                 if (resp.statusCode == 201) {
+                  // Upload image si sélectionnée
+                  try {
+                    if (pickedImage != null) {
+                      final created = json.decode(resp.body) as Map<String, dynamic>;
+                      final int id = (created['id'] as int?) ?? 0;
+                      if (id > 0) {
+                        final req = http.MultipartRequest('POST', Uri.parse('${getApiBaseUrl()}/api/menu/$id/upload_image/'));
+                        req.headers['Authorization'] = 'Bearer ${widget.token}';
+                        req.files.add(await xFileToMultipart(pickedImage!, fieldName: 'image'));
+                        await req.send();
+                      }
+                    }
+                  } catch(_) {}
                   Navigator.pop(context);
                   await _fetchMenu();
                 } else {
@@ -2829,81 +3121,121 @@ class _RestaurantSpecificMenuState extends State<RestaurantSpecificMenu> {
   }
 
   Future<void> _editDish(Map<String, dynamic> item) async {
+    await _fetchCategories();
     final nameCtrl = TextEditingController(text: item['nom']?.toString() ?? '');
     final priceCtrl = TextEditingController(text: (item['prix']?.toString() ?? ''));
-    String typeValue = (item['type']?.toString() ?? 'dej');
     final descCtrl = TextEditingController(text: item['description']?.toString() ?? '');
+    final prepCtrl = TextEditingController(text: (item['temps_preparation']?.toString() ?? ''));
+    final calCtrl = TextEditingController(text: (item['calories']?.toString() ?? ''));
+    String typeValue = (item['type']?.toString() ?? 'dej');
     int? categoryValue = (item['category'] is Map) ? item['category']['id'] : item['category'] as int?;
+    bool disponible = (item['disponible'] == true);
+    bool populaire = (item['populaire'] == true);
+    bool platDuJour = (item['plat_du_jour'] == true);
+    XFile? pickedImage;
     await showDialog(
       context: context,
-      builder: (_) => AlertDialog(
-        title: Text('Modifier le plat'),
-        content: SingleChildScrollView(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              TextField(controller: nameCtrl, decoration: InputDecoration(labelText: 'Nom *')),
-              SizedBox(height: 8),
-              TextField(controller: priceCtrl, decoration: InputDecoration(labelText: 'Prix *'), keyboardType: TextInputType.number),
-              SizedBox(height: 8),
-              DropdownButtonFormField<String>(
-                value: typeValue,
-                decoration: InputDecoration(labelText: 'Type *'),
-                items: const [
-                  DropdownMenuItem(value: 'petit_dej', child: Text('Petit-déjeuner')),
-                  DropdownMenuItem(value: 'dej', child: Text('Déjeuner')),
-                  DropdownMenuItem(value: 'diner', child: Text('Dîner')),
-                ],
-                onChanged: (v) => typeValue = v ?? 'dej',
-              ),
-              SizedBox(height: 8),
-              DropdownButtonFormField<int?>(
-                value: categoryValue,
-                decoration: InputDecoration(labelText: 'Catégorie'),
-                items: [
-                  const DropdownMenuItem<int?>(value: null, child: Text('Aucune')),
-                  ..._categories.map((c) => DropdownMenuItem<int?>(value: c['id'] as int, child: Text(c['nom']))),
-                ],
-                onChanged: (v) => categoryValue = v,
-              ),
-              SizedBox(height: 8),
-              TextField(controller: descCtrl, decoration: InputDecoration(labelText: 'Description'), maxLines: 2),
-            ],
+      builder: (_) => StatefulBuilder(
+        builder: (context, setLocalState) => AlertDialog(
+          title: Text('Modifier le plat'),
+          content: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                TextField(controller: nameCtrl, decoration: InputDecoration(labelText: 'Nom *')),
+                SizedBox(height: 8),
+                TextField(controller: priceCtrl, decoration: InputDecoration(labelText: 'Prix *'), keyboardType: TextInputType.number),
+                SizedBox(height: 8),
+                DropdownButtonFormField<String>(
+                  value: typeValue,
+                  decoration: InputDecoration(labelText: 'Type *'),
+                  items: const [
+                    DropdownMenuItem(value: 'petit_dej', child: Text('Petit-déjeuner')),
+                    DropdownMenuItem(value: 'dej', child: Text('Déjeuner')),
+                    DropdownMenuItem(value: 'diner', child: Text('Dîner')),
+                  ],
+                  onChanged: (v) => setLocalState(() => typeValue = v ?? 'dej'),
+                ),
+                SizedBox(height: 8),
+                DropdownButtonFormField<int?>(
+                  value: categoryValue,
+                  decoration: InputDecoration(labelText: 'Catégorie'),
+                  items: [
+                    const DropdownMenuItem<int?>(value: null, child: Text('Aucune')),
+                    ..._categories.map((c) => DropdownMenuItem<int?>(value: c['id'] as int, child: Text(c['nom']))),
+                  ],
+                  onChanged: (v) => setLocalState(() => categoryValue = v),
+                ),
+                SizedBox(height: 8),
+                TextField(controller: descCtrl, decoration: InputDecoration(labelText: 'Description'), maxLines: 2),
+                SizedBox(height: 8),
+                TextField(controller: prepCtrl, decoration: InputDecoration(labelText: 'Temps de préparation (min)'), keyboardType: TextInputType.number),
+                SizedBox(height: 8),
+                TextField(controller: calCtrl, decoration: InputDecoration(labelText: 'Calories'), keyboardType: TextInputType.number),
+                SizedBox(height: 8),
+                SwitchListTile(value: disponible, onChanged: (v)=> setLocalState(()=> disponible = v), title: Text('Disponible')),
+                SwitchListTile(value: populaire, onChanged: (v)=> setLocalState(()=> populaire = v), title: Text('Populaire')),
+                SwitchListTile(value: platDuJour, onChanged: (v)=> setLocalState(()=> platDuJour = v), title: Text('Plat du jour')),
+                SizedBox(height: 8),
+                Row(children:[
+                  ElevatedButton.icon(onPressed: () async {
+                    try {
+                      final picker = ImagePicker();
+                      final img = await picker.pickImage(source: ImageSource.gallery);
+                      if (img != null) setLocalState(()=> pickedImage = img);
+                    } catch(_) {}
+                  }, icon: Icon(Icons.image), label: Text('Image')),
+                  SizedBox(width: 8),
+                  if (pickedImage != null) Expanded(child: Text(pickedImage!.name, overflow: TextOverflow.ellipsis)),
+                ])
+              ],
+            ),
           ),
-        ),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(context), child: Text('Annuler')),
-          ElevatedButton(
-            style: ElevatedButton.styleFrom(backgroundColor: Colors.blue, foregroundColor: Colors.white),
-            onPressed: () async {
-              try {
-                final resp = await http.put(
-                  Uri.parse('${getApiBaseUrl()}/api/admin/menu/${item['id']}/'),
-                  headers: {'Authorization': 'Bearer ${widget.token}', 'Content-Type': 'application/json'},
-                  body: json.encode({
-                    'nom': nameCtrl.text,
-                    'prix': double.tryParse(priceCtrl.text) ?? 0,
-                    'type': typeValue,
-                    'description': descCtrl.text,
-                    'restaurant': widget.restaurant['id'],
-                    'category': categoryValue,
-                    'disponible': item['disponible'] ?? true,
-                    'populaire': item['populaire'] ?? false,
-                  }),
-                );
-                if (resp.statusCode == 200) {
-                  Navigator.pop(context);
-                  await _fetchMenu();
-                } else {
-                  throw Exception('Erreur API: ${resp.statusCode}');
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(context), child: Text('Annuler')),
+            ElevatedButton(
+              style: ElevatedButton.styleFrom(backgroundColor: Colors.blue, foregroundColor: Colors.white),
+              onPressed: () async {
+                try {
+                  final resp = await http.put(
+                    Uri.parse('${getApiBaseUrl()}/api/admin/menu/${item['id']}/'),
+                    headers: {'Authorization': 'Bearer ${widget.token}', 'Content-Type': 'application/json'},
+                    body: json.encode({
+                      'nom': nameCtrl.text,
+                      'prix': double.tryParse(priceCtrl.text) ?? 0,
+                      'type': typeValue,
+                      'description': descCtrl.text,
+                      'restaurant': widget.restaurant['id'],
+                      'category': categoryValue,
+                      'disponible': disponible,
+                      'populaire': populaire,
+                      'plat_du_jour': platDuJour,
+                      'temps_preparation': int.tryParse(prepCtrl.text ?? ''),
+                      'calories': int.tryParse(calCtrl.text ?? ''),
+                    }),
+                  );
+                  if (resp.statusCode == 200) {
+                    try {
+                      if (pickedImage != null) {
+                        final req = http.MultipartRequest('POST', Uri.parse('${getApiBaseUrl()}/api/menu/${item['id']}/upload_image/'));
+                        req.headers['Authorization'] = 'Bearer ${widget.token}';
+                        req.files.add(await xFileToMultipart(pickedImage!, fieldName: 'image'));
+                        await req.send();
+                      }
+                    } catch(_) {}
+                    Navigator.pop(context);
+                    await _fetchMenu();
+                  } else {
+                    throw Exception('Erreur API: ${resp.statusCode}');
+                  }
+                } catch (e) {
+                  ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Erreur: $e'), backgroundColor: Colors.red));
                 }
-              } catch (e) {
-                ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Erreur: $e'), backgroundColor: Colors.red));
-              }
-            },
-            child: Text('Enregistrer'),
-          ),
-        ],
+              },
+              child: Text('Enregistrer'),
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -2987,7 +3319,7 @@ class _RestaurantSpecificMenuState extends State<RestaurantSpecificMenu> {
         ..headers['Authorization'] = 'Bearer ${widget.token}'
         ..fields['model_type'] = 'menu'
         ..fields['item_id'] = itemId.toString()
-        ..files.add(await http.MultipartFile.fromPath('image', file.path));
+        ..files.add(await xFileToMultipart(file));
 
       final response = await request.send();
       if (response.statusCode == 200) {
@@ -3073,43 +3405,55 @@ class _RestaurantSpecificMenuState extends State<RestaurantSpecificMenu> {
           return Row(
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
-              Text('Menu du restaurant', style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
               Row(children: [
+                ClipRRect(
+                  borderRadius: BorderRadius.circular(6),
+                  child: SizedBox(
+                    width: 28,
+                    height: 28,
+                    child: (((widget.restaurant['logo_url'] ?? widget.restaurant['logo']) ?? '') as String).toString().isNotEmpty
+                      ? SafeImageWidget(imageUrl: (widget.restaurant['logo_url'] ?? widget.restaurant['logo'])?.toString(), width: 28, height: 28, fit: BoxFit.cover)
+                      : Container(color: Colors.grey.shade200, child: Icon(Icons.restaurant, size: 18, color: Colors.grey)),
+                  ),
+                ),
+                SizedBox(width: 8),
+                ConstrainedBox(
+                  constraints: BoxConstraints(maxWidth: MediaQuery.of(context).size.width * 0.35),
+                  child: Text('Menu du restaurant', style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold), overflow: TextOverflow.ellipsis),
+                ),
+              ]),
+              Flexible(child: Align(alignment: Alignment.centerRight, child: Wrap(spacing: 8, runSpacing: 8, children: [
                 ElevatedButton.icon(
                   onPressed: _openCategoriesManager,
                   icon: Icon(Icons.category),
                   label: Text('Catégories'),
                   style: ElevatedButton.styleFrom(backgroundColor: Colors.blueGrey, foregroundColor: Colors.white),
                 ),
-                SizedBox(width: 8),
                 ElevatedButton.icon(
                   onPressed: _openIngredientsManager,
                   icon: Icon(Icons.kitchen),
                   label: Text('Ingrédients'),
                   style: ElevatedButton.styleFrom(backgroundColor: Colors.deepPurple, foregroundColor: Colors.white),
                 ),
-                SizedBox(width: 8),
                 ElevatedButton.icon(
                   onPressed: _openBasesManager,
                   icon: Icon(Icons.category_outlined),
                   label: Text('Bases'),
                   style: ElevatedButton.styleFrom(backgroundColor: Colors.teal, foregroundColor: Colors.white),
                 ),
-                SizedBox(width: 8),
                 ElevatedButton.icon(
                   onPressed: _exportMenuCsv,
                   icon: Icon(Icons.download),
                   label: Text('Exporter'),
                   style: ElevatedButton.styleFrom(backgroundColor: Colors.green, foregroundColor: Colors.white),
                 ),
-                SizedBox(width: 8),
                 ElevatedButton.icon(
                   onPressed: _createDish,
                   icon: Icon(Icons.add),
                   label: Text('Ajouter'),
                   style: ElevatedButton.styleFrom(backgroundColor: Color(0xFFFFD700), foregroundColor: Color(0xFF2C2C2C)),
                 ),
-              ]),
+              ]))),
             ],
           );
         } else if (index == 1) {
@@ -3250,26 +3594,22 @@ class _RestaurantSpecificMenuState extends State<RestaurantSpecificMenu> {
                         ],
                       ),
                       SizedBox(height: 8),
-                      Row(
-                        children: [
+                      Wrap(spacing: 8, runSpacing: 8, children: [
                           OutlinedButton.icon(
                             onPressed: () => _toggleDisponible(item['id']),
                             icon: Icon(Icons.power_settings_new, size: 18),
                             label: Text('Basculer dispo'),
                           ),
-                          SizedBox(width: 8),
                           OutlinedButton.icon(
                             onPressed: () => _togglePopulaire(item['id']),
                             icon: Icon(Icons.star, size: 18),
                             label: Text('Basculer populaire'),
                           ),
-                          SizedBox(width: 8),
                           OutlinedButton.icon(
                             onPressed: () => _uploadImage(item['id']),
                             icon: Icon(Icons.image, size: 18),
                             label: Text('Image'),
                           ),
-                          SizedBox(width: 8),
                           OutlinedButton.icon(
                             onPressed: () async {
                               try {
@@ -3290,13 +3630,11 @@ class _RestaurantSpecificMenuState extends State<RestaurantSpecificMenu> {
                             icon: Icon(Icons.local_fire_department, size: 18, color: Colors.orange),
                             label: Text('Plat du jour'),
                           ),
-                          SizedBox(width: 8),
                           OutlinedButton.icon(
                             onPressed: () => _editDish(Map<String, dynamic>.from(item)),
                             icon: Icon(Icons.edit, size: 18),
                             label: Text('Modifier'),
                           ),
-                          SizedBox(width: 8),
                           OutlinedButton.icon(
                             onPressed: () async {
                               final confirmed = await showDialog<bool>(
@@ -3317,8 +3655,7 @@ class _RestaurantSpecificMenuState extends State<RestaurantSpecificMenu> {
                             icon: Icon(Icons.delete, size: 18, color: Colors.red),
                             label: Text('Supprimer', style: TextStyle(color: Colors.red)),
                           ),
-                        ],
-                      ),
+                        ]),
                     ],
                   ),
                 ),
@@ -3346,11 +3683,75 @@ class _RestaurantSpecificOrdersState extends State<RestaurantSpecificOrders> {
   String? _error;
   List<dynamic> _orders = [];
   String? _statusFilter; // en_attente | en_preparation | pret | termine | livre
+  Timer? _pollTimer;
+  List<dynamic> _previousOrders = []; // Pour éviter les rechargements inutiles
 
   @override
   void initState() {
     super.initState();
     _fetchOrders();
+    _initializePolling();
+  }
+
+  Future<void> _initializePolling() async {
+    // Vérifier si le polling est activé
+    final isEnabled = await PollingConfig.isPollingEnabled();
+    if (isEnabled) {
+      final interval = await PollingConfig.getOrdersInterval();
+      _pollTimer = Timer.periodic(Duration(seconds: interval), (_) => _smartFetchOrders());
+    }
+  }
+
+  // Méthode intelligente qui ne recharge que si nécessaire
+  Future<void> _smartFetchOrders() async {
+    try {
+      final restaurantId = widget.restaurant['id'];
+      final uri = Uri.parse('${getApiBaseUrl()}/api/orders/').replace(
+        queryParameters: {
+          'restaurant': '$restaurantId',
+          if (_statusFilter != null && _statusFilter!.isNotEmpty) 'status': _statusFilter!,
+        },
+      );
+      final resp = await http.get(
+        uri,
+        headers: {'Authorization': 'Bearer ${widget.token}'},
+      );
+      if (resp.statusCode == 200) {
+        final List<dynamic> newOrders = json.decode(resp.body);
+        
+        // Vérifier si les données ont vraiment changé
+        bool hasChanges = _hasOrdersChanged(newOrders);
+        
+        if (hasChanges) {
+          setState(() {
+            _previousOrders = List.from(_orders);
+            _orders = newOrders;
+          });
+        }
+      }
+    } catch (e) {
+      // En cas d'erreur, ne pas afficher d'erreur pour le polling silencieux
+      print('Polling error: $e');
+    }
+  }
+
+  // Comparer les commandes pour détecter les changements
+  bool _hasOrdersChanged(List<dynamic> newOrders) {
+    if (_orders.length != newOrders.length) return true;
+    
+    for (int i = 0; i < _orders.length; i++) {
+      final oldOrder = _orders[i];
+      final newOrder = newOrders[i];
+      
+      // Comparer les champs importants
+      if (oldOrder['id'] != newOrder['id'] ||
+          oldOrder['status'] != newOrder['status'] ||
+          oldOrder['date_creation'] != newOrder['date_creation'] ||
+          oldOrder['prix_total'] != newOrder['prix_total']) {
+        return true;
+      }
+    }
+    return false;
   }
 
   Future<void> _fetchOrders() async {
@@ -3374,6 +3775,7 @@ class _RestaurantSpecificOrdersState extends State<RestaurantSpecificOrders> {
         final List<dynamic> data = json.decode(resp.body);
         setState(() {
           _orders = data;
+          _previousOrders = List.from(data); // Sauvegarder pour la comparaison
           _loading = false;
         });
       } else {
@@ -3385,6 +3787,12 @@ class _RestaurantSpecificOrdersState extends State<RestaurantSpecificOrders> {
         _loading = false;
       });
     }
+  }
+
+  @override
+  void dispose() {
+    _pollTimer?.cancel();
+    super.dispose();
   }
 
   Future<void> _updateStatus(int orderId, String newStatus) async {
@@ -3446,23 +3854,63 @@ class _RestaurantSpecificOrdersState extends State<RestaurantSpecificOrders> {
         if (index == 0) {
           return Padding(
             padding: EdgeInsets.only(bottom: 12),
-            child: Row(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text('Commandes du restaurant', style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
-                SizedBox(
-                  width: 220,
-                  child: DropdownButtonFormField<String>(
-                    value: _statusFilter,
-                    decoration: InputDecoration(labelText: 'Statut'),
-                    items: const [
-                      DropdownMenuItem(value: 'en_attente', child: Text('En attente')),
-                      DropdownMenuItem(value: 'en_preparation', child: Text('En préparation')),
-                      DropdownMenuItem(value: 'pret', child: Text('Prêt')),
-                      DropdownMenuItem(value: 'termine', child: Text('Terminé')),
-                      DropdownMenuItem(value: 'livre', child: Text('Livré')),
-                    ],
-                    onChanged: (v) => setState(() { _statusFilter = v; _fetchOrders(); }),
+                Row(children: [
+                  ClipRRect(
+                    borderRadius: BorderRadius.circular(6),
+                    child: SizedBox(
+                      width: 28,
+                      height: 28,
+                      child: (((widget.restaurant['logo_url'] ?? widget.restaurant['logo']) ?? '') as String).toString().isNotEmpty
+                        ? SafeImageWidget(imageUrl: (widget.restaurant['logo_url'] ?? widget.restaurant['logo'])?.toString(), width: 28, height: 28, fit: BoxFit.cover)
+                        : Container(color: Colors.grey.shade200, child: Icon(Icons.restaurant, size: 18, color: Colors.grey)),
+                    ),
+                  ),
+                  SizedBox(width: 8),
+                  Expanded(child: Text('Commandes du restaurant', style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold), overflow: TextOverflow.ellipsis)),
+                ]),
+                SizedBox(height: 8),
+                // Indicateur "Live" pour les commandes
+                Row(
+                  children: [
+                    Container(
+                      width: 6,
+                      height: 6,
+                      decoration: BoxDecoration(
+                        color: Colors.green,
+                        shape: BoxShape.circle,
+                      ),
+                    ),
+                    SizedBox(width: 6),
+                    Text(
+                      'Mise à jour automatique toutes les 30s',
+                      style: TextStyle(
+                        fontSize: 11,
+                        color: Colors.green.shade700,
+                        fontStyle: FontStyle.italic,
+                      ),
+                    ),
+                  ],
+                ),
+                SizedBox(height: 8),
+                Align(
+                  alignment: Alignment.centerLeft,
+                  child: SizedBox(
+                    width: 260,
+                    child: DropdownButtonFormField<String>(
+                      value: _statusFilter,
+                      decoration: InputDecoration(labelText: 'Statut'),
+                      items: const [
+                        DropdownMenuItem(value: 'en_attente', child: Text('En attente')),
+                        DropdownMenuItem(value: 'en_preparation', child: Text('En préparation')),
+                        DropdownMenuItem(value: 'pret', child: Text('Prêt')),
+                        DropdownMenuItem(value: 'termine', child: Text('Terminé')),
+                        DropdownMenuItem(value: 'livre', child: Text('Livré')),
+                      ],
+                      onChanged: (v) => setState(() { _statusFilter = v; _fetchOrders(); }),
+                    ),
                   ),
                 ),
               ],
@@ -3507,13 +3955,108 @@ class _RestaurantSpecificOrdersState extends State<RestaurantSpecificOrders> {
                     OutlinedButton(
                       onPressed: () async {
                         try {
-                          final resp = await http.get(Uri.parse('${getApiBaseUrl()}/api/orders/${order['id']}/suivi/'), headers: {'Authorization': 'Bearer ${widget.token}'});
-                          if (resp.statusCode == 200) {
-                            final data = json.decode(resp.body);
-                            showDialog(context: context, builder: (_) => AlertDialog(title: Text('Suivi commande #${order['id']}'), content: SingleChildScrollView(child: Text(data.toString())), actions: [TextButton(onPressed: () => Navigator.pop(context), child: Text('Fermer'))]));
-                          } else {
+                          Future<Map<String, dynamic>> fetchSuivi() async {
+                            final resp = await http.get(
+                              Uri.parse('${getApiBaseUrl()}/api/orders/${order['id']}/suivi/'),
+                              headers: {'Authorization': 'Bearer ${widget.token}'},
+                            );
+                            if (resp.statusCode == 200) {
+                              final data = json.decode(resp.body) as Map<String, dynamic>;
+                              return data;
+                            }
                             throw Exception('Erreur API: ${resp.statusCode}');
                           }
+
+                          final data = await fetchSuivi();
+                          if (!mounted) return;
+                          showDialog(
+                            context: context,
+                            builder: (_) {
+                              return StatefulBuilder(
+                                builder: (context, setState) {
+                                  Map<String, dynamic> suivi = Map<String, dynamic>.from(data);
+                                  final List<dynamic> hist = (suivi['status_history'] as List? ?? []);
+                                  final String currentStatus = (suivi['order']?['status'] ?? 'en_attente').toString();
+                                  final dynamic est = suivi['estimated_time'];
+                                  return AlertDialog(
+                                    title: Text('Suivi commande #${order['id']}'),
+                                    content: SingleChildScrollView(
+                                      child: Column(
+                                        crossAxisAlignment: CrossAxisAlignment.start,
+                                        children: [
+                                          Row(
+                                            children: [
+                                              Container(
+                                                padding: EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                                                decoration: BoxDecoration(
+                                                  color: _statusColor(currentStatus),
+                                                  borderRadius: BorderRadius.circular(12),
+                                                ),
+                                                child: Text(
+                                                  _statusText(currentStatus),
+                                                  style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
+                                                ),
+                                              ),
+                                              SizedBox(width: 8),
+                                              if (est != null)
+                                                Text('Temps estimé: ${est.toString()} min', style: TextStyle(fontWeight: FontWeight.w500)),
+                                            ],
+                                          ),
+                                          SizedBox(height: 12),
+                                          Text('Historique', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+                                          SizedBox(height: 8),
+                                          ...hist.map((h) {
+                                            final String st = (h['status'] ?? '').toString();
+                                            final String ts = (h['timestamp'] ?? '').toString();
+                                            final String msg = (h['message'] ?? '').toString();
+                                            return Container(
+                                              margin: EdgeInsets.only(bottom: 8),
+                                              child: Row(
+                                                crossAxisAlignment: CrossAxisAlignment.start,
+                                                children: [
+                                                  Icon(Icons.check_circle, size: 18, color: _statusColor(st)),
+                                                  SizedBox(width: 8),
+                                                  Expanded(
+                                                    child: Column(
+                                                      crossAxisAlignment: CrossAxisAlignment.start,
+                                                      children: [
+                                                        Text('${_statusText(st)}', style: TextStyle(fontWeight: FontWeight.bold)),
+                                                        if (msg.isNotEmpty) Text(msg),
+                                                        if (ts.isNotEmpty) Text(ts, style: TextStyle(color: Colors.grey, fontSize: 12)),
+                                                      ],
+                                                    ),
+                                                  )
+                                                ],
+                                              ),
+                                            );
+                                          }).toList(),
+                                        ],
+                                      ),
+                                    ),
+                                    actions: [
+                                      TextButton(
+                                        onPressed: () async {
+                                          try {
+                                            final fresh = await fetchSuivi();
+                                            setState(() {
+                                              suivi = Map<String, dynamic>.from(fresh);
+                                            });
+                                          } catch (e) {
+                                            ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Erreur: $e'), backgroundColor: Colors.red));
+                                          }
+                                        },
+                                        child: Text('Actualiser'),
+                                      ),
+                                      TextButton(
+                                        onPressed: () => Navigator.pop(context),
+                                        child: Text('Fermer'),
+                                      ),
+                                    ],
+                                  );
+                                },
+                              );
+                            },
+                          );
                         } catch (e) {
                           ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Erreur: $e'), backgroundColor: Colors.red));
                         }
@@ -3654,8 +4197,24 @@ class _RestaurantSpecificStaffState extends State<RestaurantSpecificStaff> {
           return Row(
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
-              Text('Personnel du restaurant', style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
               Row(children: [
+                ClipRRect(
+                  borderRadius: BorderRadius.circular(6),
+                  child: SizedBox(
+                    width: 28,
+                    height: 28,
+                    child: (((widget.restaurant['logo_url'] ?? widget.restaurant['logo']) ?? '') as String).toString().isNotEmpty
+                      ? SafeImageWidget(imageUrl: (widget.restaurant['logo_url'] ?? widget.restaurant['logo'])?.toString(), width: 28, height: 28, fit: BoxFit.cover)
+                      : Container(color: Colors.grey.shade200, child: Icon(Icons.restaurant, size: 18, color: Colors.grey)),
+                  ),
+                ),
+                SizedBox(width: 8),
+                ConstrainedBox(
+                  constraints: BoxConstraints(maxWidth: MediaQuery.of(context).size.width * 0.35),
+                  child: Text('Personnel du restaurant', style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold), overflow: TextOverflow.ellipsis),
+                ),
+              ]),
+              Wrap(spacing: 8, runSpacing: 8, children: [
                 SizedBox(
                   width: 180,
                   child: DropdownButtonFormField<String>(
@@ -3669,7 +4228,6 @@ class _RestaurantSpecificStaffState extends State<RestaurantSpecificStaff> {
                     onChanged: (v) => setState(() { _roleFilter = v; _fetchStaff(); }),
                   ),
                 ),
-                SizedBox(width: 8),
                 ElevatedButton.icon(
                   onPressed: () => _createStaffDialog(),
                   icon: Icon(Icons.person_add),
@@ -4086,7 +4644,20 @@ class _RestaurantSpecificStatsState extends State<RestaurantSpecificStats> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text('Statistiques', style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold, color: Color(0xFF2C2C2C))),
+            Row(children: [
+              ClipRRect(
+                borderRadius: BorderRadius.circular(6),
+                child: SizedBox(
+                  width: 28,
+                  height: 28,
+                  child: (((widget.restaurant['logo_url'] ?? widget.restaurant['logo']) ?? '') as String).toString().isNotEmpty
+                    ? SafeImageWidget(imageUrl: (widget.restaurant['logo_url'] ?? widget.restaurant['logo'])?.toString(), width: 28, height: 28, fit: BoxFit.cover)
+                    : Container(color: Colors.white.withOpacity(0.3), child: Icon(Icons.bar_chart, size: 18, color: Color(0xFF2C2C2C))),
+                ),
+              ),
+              SizedBox(width: 8),
+              Expanded(child: Text('Statistiques', style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold, color: Color(0xFF2C2C2C)), overflow: TextOverflow.ellipsis)),
+            ]),
             SizedBox(height: 24),
             Card(
               elevation: 3,
@@ -4221,11 +4792,14 @@ class AdminUsersManagement extends StatefulWidget {
 class _AdminUsersManagementState extends State<AdminUsersManagement> {
   List<Map<String, dynamic>> users = [];
   bool isLoading = true;
+  List<Map<String, dynamic>> _restaurants = [];
+  bool _loadingRestaurants = false;
 
   @override
   void initState() {
     super.initState();
     _loadUsersFromApi();
+    _loadRestaurantsForSelect();
   }
 
   Future<void> _loadUsersFromApi() async {
@@ -4241,15 +4815,23 @@ class _AdminUsersManagementState extends State<AdminUsersManagement> {
         final List<dynamic> data = json.decode(response.body);
         setState(() {
           users = data.map((user) {
+            final profile = user['profile'] ?? {};
+            final r = profile['restaurant'];
+            int? restaurantId;
+            String? restaurantName;
+            if (r is Map) { restaurantId = r['id'] as int?; restaurantName = r['nom']?.toString(); }
+            if (r is int) { restaurantId = r; }
             return {
               'id': user['id'],
               'nom': '${user['first_name']} ${user['last_name']}'.trim(),
-              'telephone': user['profile']?['phone'] ?? user['username'],
+              'telephone': profile['phone'] ?? user['username'],
               'email': user['email'] ?? '',
-              'pin': '****', // PIN masqué pour la sécurité
-              'role': user['profile']?['role'] ?? 'client',
+              'pin': '****',
+              'role': profile['role'] ?? 'client',
               'actif': user['is_active'] ?? true,
               'date_creation': _formatDate(user['date_joined']),
+              'restaurant_id': restaurantId,
+              'restaurant_name': restaurantName,
             };
           }).toList();
           isLoading = false;
@@ -4282,6 +4864,28 @@ class _AdminUsersManagementState extends State<AdminUsersManagement> {
         ),
       );
     }
+  }
+
+  Future<void> _loadRestaurantsForSelect() async {
+    setState(() { _loadingRestaurants = true; });
+    try {
+      final resp = await http.get(
+        Uri.parse('${getApiBaseUrl()}/api/admin/restaurants/'),
+        headers: {'Authorization': 'Bearer ${widget.token}'},
+      );
+      if (resp.statusCode == 200) {
+        final List<dynamic> data = json.decode(resp.body);
+        setState(() {
+          _restaurants = data.map<Map<String, dynamic>>((r) => {
+            'id': r['id'],
+            'nom': r['nom'] ?? 'Restaurant',
+          }).toList();
+          _loadingRestaurants = false;
+        });
+      } else {
+        setState(() { _loadingRestaurants = false; });
+      }
+    } catch (_) { setState(() { _loadingRestaurants = false; }); }
   }
 
   String _formatDate(String? dateString) {
@@ -4497,6 +5101,7 @@ class _AdminUsersManagementState extends State<AdminUsersManagement> {
     final _emailController = TextEditingController();
     final _pinController = TextEditingController();
     String _selectedRole = 'client';
+    int? _selectedRestaurantId;
 
     // Générer un PIN automatique
     String _generatePin() {
@@ -4580,6 +5185,21 @@ class _AdminUsersManagementState extends State<AdminUsersManagement> {
                   _selectedRole = value!;
                 },
               ),
+              SizedBox(height: 12),
+              FutureBuilder(
+                future: _restaurants.isEmpty ? _loadRestaurantsForSelect() : Future.value(),
+                builder: (context, snapshot) {
+                  return DropdownButtonFormField<int?>(
+                    value: _selectedRestaurantId,
+                    decoration: InputDecoration(labelText: 'Associer à un restaurant', border: OutlineInputBorder()),
+                    items: [
+                      const DropdownMenuItem<int?>(value: null, child: Text('Aucun')),
+                      ..._restaurants.map((r) => DropdownMenuItem<int?>(value: r['id'] as int, child: Text(r['nom']))),
+                    ],
+                    onChanged: (v) { _selectedRestaurantId = v; },
+                  );
+                },
+              ),
                   SizedBox(height: 16),
               Container(
                 padding: EdgeInsets.all(12),
@@ -4621,6 +5241,7 @@ class _AdminUsersManagementState extends State<AdminUsersManagement> {
                   _emailController.text,
                   _pinController.text,
                   _selectedRole,
+                  restaurantId: _selectedRestaurantId,
                 );
                 
                 Navigator.pop(context);
@@ -4639,12 +5260,14 @@ class _AdminUsersManagementState extends State<AdminUsersManagement> {
   }
 
   // Méthodes API pour la gestion des utilisateurs
-  Future<void> _createUserInBackend(String nom, String telephone, String email, String pin, String role) async {
+  Future<void> _createUserInBackend(String nom, String telephone, String email, String pin, String role, {int? restaurantId}) async {
     try {
       // Séparer le nom en prénom et nom de famille
       List<String> nameParts = nom.split(' ');
       String firstName = nameParts[0];
       String lastName = nameParts.length > 1 ? nameParts.sublist(1).join(' ') : '';
+      final String phoneDigits = sanitizePhone(telephone);
+      final String pinDigits = sanitizePhone(pin).padLeft(4, '0').substring(0, 4);
 
       final response = await http.post(
         Uri.parse('${getApiBaseUrl()}/api/admin/personnel/'),
@@ -4653,15 +5276,22 @@ class _AdminUsersManagementState extends State<AdminUsersManagement> {
           'Authorization': 'Bearer ${widget.token}',
         },
         body: json.encode({
-          'username': telephone,
-          'phone': telephone,
-          'pin': pin,
-          'password': pin,
+          'username': phoneDigits,
+          'phone': phoneDigits,
+          'pin': pinDigits,
+          'pin_code': pinDigits,
+          'password': pinDigits,
           'email': email,
           'first_name': firstName,
           'last_name': lastName,
           'role': role,
           'is_active': true,
+          'profile': {
+            'phone': phoneDigits,
+            'role': role,
+            if (restaurantId != null) 'restaurant': restaurantId,
+            'pin_code': pinDigits,
+          },
         }),
       );
 
@@ -4670,17 +5300,42 @@ class _AdminUsersManagementState extends State<AdminUsersManagement> {
         final responseData = json.decode(response.body);
         int userId = responseData['id'];
         
+        // Associer un restaurant si demandé (PATCH pour éviter les duplications côté profil)
+        if (restaurantId != null) {
+          try {
+            final patchResp = await http.patch(
+              Uri.parse('${getApiBaseUrl()}/api/admin/personnel/$userId/'),
+              headers: {
+                'Content-Type': 'application/json',
+                'Authorization': 'Bearer ${widget.token}',
+              },
+              body: json.encode({
+                'restaurant': restaurantId,
+                'profile': {'restaurant': restaurantId, 'pin_code': pinDigits, 'phone': phoneDigits},
+                'pin_code': pinDigits,
+              }),
+            );
+            if (patchResp.statusCode != 200) {
+              // On n'empêche pas la création, mais on informe
+              ScaffoldMessenger.of(context).showSnackBar(
+                SnackBar(content: Text('Utilisateur créé, mais association restaurant non appliquée (${patchResp.statusCode})'), backgroundColor: Colors.orange),
+              );
+            }
+          } catch (_) {}
+        }
+
         // Ajouter à la liste locale après succès de l'API
         setState(() {
           users.add({
             'id': userId,
             'nom': nom,
-            'telephone': telephone,
+            'telephone': phoneDigits,
             'email': email,
-            'pin': pin,
+            'pin': pinDigits,
             'role': role,
             'actif': true,
             'date_creation': '${DateTime.now().day}/${DateTime.now().month}/${DateTime.now().year}',
+            'restaurant_id': restaurantId,
           });
         });
 
@@ -4710,12 +5365,14 @@ class _AdminUsersManagementState extends State<AdminUsersManagement> {
     }
   }
 
-  Future<void> _updateUserInBackend(Map<String, dynamic> user, String nom, String telephone, String email, String pin, String role) async {
+  Future<void> _updateUserInBackend(Map<String, dynamic> user, String nom, String telephone, String email, String pin, String role, {int? restaurantId}) async {
     try {
       // Séparer le nom en prénom et nom de famille
       List<String> nameParts = nom.split(' ');
       String firstName = nameParts[0];
       String lastName = nameParts.length > 1 ? nameParts.sublist(1).join(' ') : '';
+      final String phoneDigits = sanitizePhone(telephone);
+      final String pinDigits = sanitizePhone(pin).padLeft(4, '0').substring(0, 4);
 
       final response = await http.put(
         Uri.parse('${getApiBaseUrl()}/api/admin/personnel/${user['id']}/'),
@@ -4724,14 +5381,22 @@ class _AdminUsersManagementState extends State<AdminUsersManagement> {
           'Authorization': 'Bearer ${widget.token}',
         },
         body: json.encode({
-          'username': telephone,
-          'phone': telephone,
-          'pin': pin,
-          'password': pin,
+          'username': phoneDigits,
+          'phone': phoneDigits,
+          'pin': pinDigits,
+          'pin_code': pinDigits,
+          'password': pinDigits,
           'email': email,
           'first_name': firstName,
           'last_name': lastName,
           'role': role,
+          if (restaurantId != null) 'restaurant': restaurantId,
+          'profile': {
+            'phone': phoneDigits,
+            'role': role,
+            if (restaurantId != null) 'restaurant': restaurantId,
+            'pin_code': pinDigits,
+          },
         }),
       );
 
@@ -4739,10 +5404,11 @@ class _AdminUsersManagementState extends State<AdminUsersManagement> {
         // Mettre à jour la liste locale après succès de l'API
         setState(() {
           user['nom'] = nom;
-          user['telephone'] = telephone;
+          user['telephone'] = phoneDigits;
           user['email'] = email;
-          user['pin'] = pin;
+          user['pin'] = pinDigits;
           user['role'] = role;
+          user['restaurant_id'] = restaurantId;
         });
 
         ScaffoldMessenger.of(context).showSnackBar(
@@ -4814,6 +5480,7 @@ class _AdminUsersManagementState extends State<AdminUsersManagement> {
     final _emailController = TextEditingController(text: user['email']);
     final _pinController = TextEditingController(text: user['pin'] ?? '1234');
     String _selectedRole = user['role'];
+    int? _selectedRestaurantId = user['restaurant_id'] as int?;
 
     showDialog(
       context: context,
@@ -4882,6 +5549,21 @@ class _AdminUsersManagementState extends State<AdminUsersManagement> {
                   _selectedRole = value!;
                 },
               ),
+              SizedBox(height: 12),
+              FutureBuilder(
+                future: _restaurants.isEmpty ? _loadRestaurantsForSelect() : Future.value(),
+                builder: (context, snapshot) {
+                  return DropdownButtonFormField<int?>(
+                    value: _selectedRestaurantId,
+                    decoration: InputDecoration(labelText: 'Associer à un restaurant', border: OutlineInputBorder()),
+                    items: [
+                      const DropdownMenuItem<int?>(value: null, child: Text('Aucun')),
+                      ..._restaurants.map((r) => DropdownMenuItem<int?>(value: r['id'] as int, child: Text(r['nom']))),
+                    ],
+                    onChanged: (v) { _selectedRestaurantId = v; },
+                  );
+                },
+              ),
             ],
           ),
         ),
@@ -4904,6 +5586,7 @@ class _AdminUsersManagementState extends State<AdminUsersManagement> {
                   _emailController.text,
                   _pinController.text,
                   _selectedRole,
+                  restaurantId: _selectedRestaurantId,
                 );
                 
                 Navigator.pop(context);

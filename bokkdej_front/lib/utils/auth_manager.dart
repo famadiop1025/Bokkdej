@@ -41,24 +41,63 @@ class AuthManager {
     }
     
     final role = userProfile['role'] as String?;
+    final restaurant = userProfile['restaurant'];
     
     switch (role) {
       case 'admin':
-        Navigator.pushReplacement(
-          context,
-          MaterialPageRoute(
-            builder: (context) => AdminPage(token: token, userRole: 'admin'),
-          ),
-        );
-        break;
       case 'personnel':
       case 'chef':
-        Navigator.pushReplacement(
-          context,
-          MaterialPageRoute(
-            builder: (context) => AdminPage(token: token, userRole: 'staff'),
-          ),
-        );
+        // Si le profil a un restaurant associé, on ouvre directement l'espace de CE restaurant
+        if (restaurant != null) {
+          Map<String, dynamic> restMap = {};
+          try {
+            if (restaurant is Map) {
+              restMap = Map<String, dynamic>.from(restaurant as Map);
+            } else {
+              final int restId = int.tryParse(restaurant.toString()) ?? -1;
+              if (restId > 0) {
+                // Essai 1: endpoint admin
+                var resp = await http.get(
+                  Uri.parse('$apiBaseUrl/api/admin/restaurants/$restId/'),
+                  headers: {'Authorization': 'Bearer $token'},
+                );
+                if (resp.statusCode == 200) {
+                  restMap = Map<String, dynamic>.from(json.decode(resp.body));
+                } else {
+                  // Fallback public
+                  resp = await http.get(Uri.parse('$apiBaseUrl/api/restaurants/$restId/'));
+                  if (resp.statusCode == 200) {
+                    restMap = Map<String, dynamic>.from(json.decode(resp.body));
+                  }
+                }
+              }
+            }
+          } catch (_) {}
+
+          if (restMap.isEmpty) {
+            // À défaut, passer l'id pour que l'écran recharge, mais éviter null dans le titre
+            restMap = {
+              if (restaurant is int) 'id': restaurant,
+              if (restaurant is String) 'id': int.tryParse(restaurant) ?? 0,
+              'nom': 'Restaurant',
+            };
+          }
+
+          Navigator.pushReplacement(
+            context,
+            MaterialPageRoute(
+              builder: (context) => RestaurantDashboard(restaurant: restMap, token: token),
+            ),
+          );
+        } else {
+          // Sinon, page admin générale
+          Navigator.pushReplacement(
+            context,
+            MaterialPageRoute(
+              builder: (context) => AdminPage(token: token, userRole: role ?? 'staff'),
+            ),
+          );
+        }
         break;
       case 'client':
       default:

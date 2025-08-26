@@ -143,4 +143,16 @@ MEDIA_ROOT = os.path.join(BASE_DIR, 'media')
 CORS_ALLOW_ALL_ORIGINS = True
 
 # Clé FCM pour notifications push
-FCM_SERVER_KEY = os.environ.get('DJANGO_FCM_KEY', 'VOTRE_CLE_FCM')
+# Clé FCM pour notifications push
+# Priorité: variable d'env FCM_SERVER_KEY, puis DJANGO_FCM_KEY, sinon placeholder (à remplacer)
+FCM_SERVER_KEY = (
+    os.environ.get('FCM_SERVER_KEY')
+    or os.environ.get('DJANGO_FCM_KEY')
+    or 'REMPLACEZ_PAR_VOTRE_CLE_FCM'
+)
+
+# Twilio (SMS) - configurez via variables d'environnement
+TWILIO_ACCOUNT_SID = os.environ.get('TWILIO_ACCOUNT_SID', '')
+TWILIO_AUTH_TOKEN = os.environ.get('TWILIO_AUTH_TOKEN', '')
+TWILIO_FROM_NUMBER = os.environ.get('TWILIO_FROM_NUMBER', '')
+DEFAULT_SMS_COUNTRY_CODE = os.environ.get('DEFAULT_SMS_COUNTRY_CODE', '+221')

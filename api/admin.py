@@ -75,17 +75,16 @@ class BaseAdmin(BaseImageAdmin):
 
 @admin.register(CustomDish)
 class CustomDishAdmin(admin.ModelAdmin):
-    list_display = ['__str__', 'user', 'prix', 'created_at']
-    list_filter = ['created_at', 'user']
-    search_fields = ['base', 'user__username']
-    filter_horizontal = ['ingredients']
+    list_display = ['__str__', 'prix_total', 'disponible', 'created_at']
+    list_filter = ['created_at', 'disponible']
+    search_fields = ['base']
     readonly_fields = ['created_at']
 
 @admin.register(Order)
 class OrderAdmin(admin.ModelAdmin):
     list_display = ['id', 'user_or_phone', 'status', 'total_display', 'created_at']
     list_filter = ['status', 'created_at']
-    search_fields = ['user__username', 'phone', 'address']
+    search_fields = ['user__username', 'phone']
     readonly_fields = ['created_at']
     
     def user_or_phone(self, obj):
@@ -93,7 +92,7 @@ class OrderAdmin(admin.ModelAdmin):
     user_or_phone.short_description = "Client"
     
     def total_display(self, obj):
-        return f"{obj.total} F CFA"
+        return f"{obj.total_amount} F CFA"
     total_display.short_description = "Total"
 
 @admin.register(Restaurant)
@@ -114,8 +113,7 @@ class RestaurantAdmin(admin.ModelAdmin):
 
 @admin.register(UserProfile)
 class UserProfileAdmin(admin.ModelAdmin):
-    list_display = ['user', 'role', 'phone', 'has_fcm_token']
-    list_filter = ['role']
+    list_display = ['user', 'phone', 'has_fcm_token']
     search_fields = ['user__username', 'user__email', 'phone']
     
     def has_fcm_token(self, obj):

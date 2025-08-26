@@ -2,11 +2,11 @@ from rest_framework import viewsets, permissions, status
 from rest_framework.decorators import action, api_view, permission_classes
 from rest_framework.response import Response
 from django.contrib.auth.models import User
-from django.db.models import Count, Sum, Avg, Q
+from django.db.models import Count, Sum, Avg, Q, F
 from django.utils import timezone
 from datetime import datetime, timedelta
 from .models import (
-    MenuItem, Ingredient, UserProfile, Order, OrderItem, 
+    MenuItem, Ingredient, UserProfile, Order, 
     Restaurant, SystemSettings, Category, CustomDish
 )
 from .serializers import (
@@ -25,10 +25,8 @@ class IsAdminPermission(permissions.BasePermission):
         if request.user.is_superuser:
             return True
             
-        try:
-            return hasattr(request.user, 'userprofile') and request.user.userprofile.role in ['admin', 'personnel', 'chef']
-        except:
-            return False
+        # Utiliser is_staff au lieu du champ role
+        return request.user.is_staff
 
 # ========== 1. GESTION DU MENU ==========
 
@@ -260,8 +258,6 @@ class AdminRestaurantViewSet(viewsets.ModelViewSet):
             return Response({'error': 'Restaurant déjà validé'}, status=400)
         
         restaurant.statut = 'valide'
-        restaurant.date_validation = timezone.now()
-        restaurant.validé_par = request.user
         restaurant.save()
         
         return Response({
@@ -279,9 +275,6 @@ class AdminRestaurantViewSet(viewsets.ModelViewSet):
         restaurant.actif = False
         restaurant.save()
         
-        # Désactiver aussi tous les utilisateurs du restaurant
-        UserProfile.objects.filter(restaurant=restaurant).update(actif=False)
-        
         return Response({
             'message': 'Restaurant suspendu',
             'statut': restaurant.statut
@@ -295,9 +288,6 @@ class AdminRestaurantViewSet(viewsets.ModelViewSet):
         restaurant.statut = 'valide'
         restaurant.actif = True
         restaurant.save()
-        
-        # Réactiver les utilisateurs du restaurant
-        UserProfile.objects.filter(restaurant=restaurant).update(actif=True)
         
         return Response({
             'message': 'Restaurant réactivé',
@@ -352,58 +342,69 @@ class AdminPersonnelViewSet(viewsets.ModelViewSet):
     permission_classes = [IsAdminPermission]
     
     def get_queryset(self):
-        # Afficher tous les utilisateurs avec profil, avec filtre optionnel par restaurant
+        # Afficher tous les utilisateurs avec profil
         queryset = User.objects.filter(userprofile__isnull=False).order_by('-date_joined')
-        restaurant_id = self.request.query_params.get('restaurant') or self.request.query_params.get('restaurant_id')
-        if restaurant_id:
-            queryset = queryset.filter(userprofile__restaurant_id=restaurant_id)
-        role = self.request.query_params.get('role')
-        if role:
-            queryset = queryset.filter(userprofile__role=role)
+        # Le filtre par restaurant n'est plus possible car le champ n'existe plus
         return queryset
 
     def create(self, request, *args, **kwargs):
-        """Créer un nouvel utilisateur avec profil, lié à un restaurant si fourni"""
+        """Créer un nouvel utilisateur avec profil"""
         from django.contrib.auth.hashers import make_password
-        from .models import Restaurant
 
         data = request.data
+        
+        # Normalisation téléphone
+        def _normalize_phone(value):
+            if not value:
+                return None
+            import re
+            return re.sub(r'[^0-9]', '', str(value))
 
         # Lecture des champs principaux
         username = data.get('username', data.get('phone'))
         if not username:
             return Response({'username': ['Ce champ est requis (username ou phone).']}, status=status.HTTP_400_BAD_REQUEST)
+        username = _normalize_phone(username) or username
 
-        role = (data.get('role') or data.get('profile', {}).get('role') or 'client')
-        restaurant_id = data.get('restaurant') or data.get('restaurant_id') or data.get('profile', {}).get('restaurant')
+        # Créer l'utilisateur (ou récupérer s'il existe déjà)
+        user = User.objects.filter(username=username).first()
+        if user is None:
+            user = User.objects.create(
+                username=username,
+                email=data.get('email', ''),
+                first_name=data.get('first_name', ''),
+                last_name=data.get('last_name', ''),
+                password=make_password(data.get('password', data.get('pin'))),
+                is_active=data.get('is_active', True)
+            )
+        else:
+            # Mettre à jour quelques champs si fournis
+            user.email = data.get('email', user.email)
+            user.first_name = data.get('first_name', user.first_name)
+            user.last_name = data.get('last_name', user.last_name)
+            if data.get('password') or data.get('pin'):
+                user.set_password(data.get('password', data.get('pin')))
+            user.is_active = data.get('is_active', user.is_active)
+            user.save()
 
-        # Règle métier: le personnel (admin/personnel/chef) doit appartenir à un restaurant
-        restaurant = None
-        if role in ['admin', 'personnel', 'chef']:
-            if not restaurant_id:
-                return Response({'restaurant': ['Obligatoire pour le personnel.']}, status=status.HTTP_400_BAD_REQUEST)
-            try:
-                restaurant = Restaurant.objects.get(pk=restaurant_id)
-            except Restaurant.DoesNotExist:
-                return Response({'restaurant': ['Restaurant introuvable.']}, status=status.HTTP_400_BAD_REQUEST)
-
-        # Créer l'utilisateur
-        user = User.objects.create(
-            username=username,
-            email=data.get('email', ''),
-            first_name=data.get('first_name', ''),
-            last_name=data.get('last_name', ''),
-            password=make_password(data.get('password', data.get('pin'))),
-            is_active=data.get('is_active', True)
-        )
-
-        # Créer le profil
-        profile = UserProfile.objects.create(
+        # Créer ou mettre à jour le profil sans violer la contrainte UNIQUE
+        profile, created_profile = UserProfile.objects.get_or_create(
             user=user,
-            phone=data.get('phone', username),
-            role=role,
-            restaurant=restaurant
+            defaults={
+                'phone': _normalize_phone(data.get('phone', username)) or username,
+            }
         )
+        if not created_profile:
+            profile.phone = _normalize_phone(data.get('phone', profile.phone)) or profile.phone
+            profile.save()
+        # Enregistrer le pin_code si fourni
+        try:
+            pin_code = data.get('pin_code') or data.get('pin') or data.get('profile', {}).get('pin_code')
+            if pin_code is not None:
+                profile.pin_code = str(pin_code)
+                profile.save()
+        except Exception:
+            pass
 
         serializer = self.get_serializer(user)
         return Response(serializer.data, status=status.HTTP_201_CREATED)
@@ -414,9 +415,16 @@ class AdminPersonnelViewSet(viewsets.ModelViewSet):
 
         user = self.get_object()
         data = request.data
+        
+        def _normalize_phone(value):
+            if not value:
+                return None
+            import re
+            return re.sub(r'[^0-9]', '', str(value))
 
         # Mettre à jour l'utilisateur
-        user.username = data.get('username', data.get('phone', user.username))
+        raw_username = data.get('username', data.get('phone', user.username))
+        user.username = _normalize_phone(raw_username) or raw_username
         user.email = data.get('email', user.email)
         user.first_name = data.get('first_name', user.first_name)
         user.last_name = data.get('last_name', user.last_name)
@@ -431,27 +439,17 @@ class AdminPersonnelViewSet(viewsets.ModelViewSet):
         # Mettre à jour le profil
         if hasattr(user, 'userprofile'):
             profile = user.userprofile
-            profile.phone = data.get('phone', data.get('username', profile.phone))
+            raw_phone = data.get('phone', data.get('username', profile.phone))
+            profile.phone = _normalize_phone(raw_phone) or raw_phone
 
-            # Rôle
-            if 'role' in data:
-                profile.role = data['role']
-            elif 'profile' in data and 'role' in data['profile']:
-                profile.role = data['profile']['role']
-
-            # Restaurant
-            restaurant_id = data.get('restaurant') or data.get('restaurant_id')
-            if not restaurant_id and 'profile' in data:
-                restaurant_id = data['profile'].get('restaurant')
-            if restaurant_id is not None:
-                if restaurant_id == '' or restaurant_id is False:
-                    profile.restaurant = None
-                else:
-                    try:
-                        profile.restaurant = Restaurant.objects.get(pk=restaurant_id)
-                    except Restaurant.DoesNotExist:
-                        return Response({'restaurant': ['Restaurant introuvable.']}, status=status.HTTP_400_BAD_REQUEST)
-
+            # Restaurant (supprimé car le champ n'existe plus)
+            # pin_code
+            try:
+                pin_code = data.get('pin_code') or data.get('pin') or data.get('profile', {}).get('pin_code')
+                if pin_code is not None:
+                    profile.pin_code = str(pin_code)
+            except Exception:
+                pass
             profile.save()
 
         serializer = self.get_serializer(user)
@@ -464,11 +462,6 @@ class AdminPersonnelViewSet(viewsets.ModelViewSet):
         user.is_active = not user.is_active
         user.save()
         
-        # Mettre à jour aussi le profil
-        if hasattr(user, 'userprofile'):
-            user.userprofile.actif = user.is_active
-            user.userprofile.save()
-        
         return Response({
             'message': f'Utilisateur {"activé" if user.is_active else "désactivé"}',
             'is_active': user.is_active
@@ -476,45 +469,24 @@ class AdminPersonnelViewSet(viewsets.ModelViewSet):
     
     @action(detail=True, methods=['post'])
     def change_role(self, request, pk=None):
-        """Changer le rôle d'un utilisateur"""
-        user = self.get_object()
-        new_role = request.data.get('role')
-        
-        valid_roles = ['admin', 'personnel', 'chef']
-        if new_role not in valid_roles:
-            return Response({'error': 'Rôle invalide'}, status=400)
-        
-        if hasattr(user, 'userprofile'):
-            user.userprofile.role = new_role
-            user.userprofile.save()
-            
-            return Response({
-                'message': f'Rôle changé vers {new_role}',
-                'role': new_role
-            })
-        
-        return Response({'error': 'Profil utilisateur non trouvé'}, status=400)
+        """Changer le rôle d'un utilisateur (désactivé car le champ role n'existe plus)"""
+        return Response({'error': 'Changement de rôle non supporté'}, status=400)
     
     @action(detail=False, methods=['get'])
     def statistics(self, request):
         """Statistiques du personnel"""
-        total_staff = User.objects.filter(
-            userprofile__role__in=['admin', 'personnel', 'chef']
-        ).count()
+        # Utiliser is_staff au lieu du champ role
+        total_staff = User.objects.filter(is_staff=True).count()
         
         active_staff = User.objects.filter(
-            userprofile__role__in=['admin', 'personnel', 'chef'],
+            is_staff=True,
             is_active=True
         ).count()
-        
-        by_role = UserProfile.objects.filter(
-            role__in=['admin', 'personnel', 'chef']
-        ).values('role').annotate(count=Count('id'))
         
         return Response({
             'total_staff': total_staff,
             'active_staff': active_staff,
-            'by_role': by_role
+            'by_role': []  # Plus de rôles spécifiques
         })
 
 # ========== 4. STATISTIQUES GÉNÉRALES ==========
@@ -542,34 +514,24 @@ def admin_statistics(request):
     
     # Chiffre d'affaires  
     total_revenue = base_orders.aggregate(
-        total=Sum('prix_total')
+        total=Sum('total_amount')
     )['total'] or 0
     
-    revenue_today = base_orders.filter(created_at__date=today).aggregate(total=Sum('prix_total'))['total'] or 0
+    revenue_today = base_orders.filter(created_at__date=today).aggregate(total=Sum('total_amount'))['total'] or 0
     
-    revenue_week = base_orders.filter(created_at__date__gte=week_ago).aggregate(total=Sum('prix_total'))['total'] or 0
+    revenue_week = base_orders.filter(created_at__date__gte=week_ago).aggregate(total=Sum('total_amount'))['total'] or 0
     
-    revenue_month = base_orders.filter(created_at__date__gte=month_ago).aggregate(total=Sum('prix_total'))['total'] or 0
+    revenue_month = base_orders.filter(created_at__date__gte=month_ago).aggregate(total=Sum('total_amount'))['total'] or 0
     
     # Commandes par statut
     orders_by_status = base_orders.values('status').annotate(count=Count('id'))
     
     # Plats les plus populaires (simplifié car structure différente)
     popular_dishes = []
-    try:
-        # Essayer avec les OrderItems si ils existent
-        popular_dishes = OrderItem.objects.values(
-            'custom_dish__base'
-        ).annotate(
-            total_quantity=Sum('quantity')
-        ).order_by('-total_quantity')[:5]
-    except:
-        # Si erreur, laisser liste vide
-        pass
     
     # Moyennes
     avg_order_value = Order.objects.exclude(status='panier').aggregate(
-        avg=Avg('prix_total')
+        avg=Avg('total_amount')
     )['avg'] or 0
     
     # Alertes
@@ -632,7 +594,7 @@ def admin_dashboard_data(request):
             'adresse': '123 Avenue de la République, Dakar',
             'telephone': '+221 77 123 45 67',
             'email': 'contact@bokdej.sn',
-            'horaires_ouverture': 'Lun-Sam: 8h-22h, Dim: 10h-20h',
+            'description': 'Restaurant de qualité',
             'logo': None,
             'actif': True
         }
@@ -647,7 +609,7 @@ def admin_dashboard_data(request):
                     'adresse': restaurant.adresse or '',
                     'telephone': restaurant.telephone or '',
                     'email': restaurant.email or '',
-                    'horaires_ouverture': restaurant.horaires_ouverture or '',
+                    'description': restaurant.description or '',
                     'logo': restaurant.logo.url if restaurant.logo else None,
                     'actif': getattr(restaurant, 'actif', True)
                 }
@@ -672,10 +634,10 @@ def admin_dashboard_data(request):
                     'id': order.id,
                     'user': user_name,
                     'telephone': getattr(order, 'phone', ''),
-                    'total': float(getattr(order, 'prix_total', 0)),
+                    'total': float(getattr(order, 'total_amount', 0)),
                     'statut': getattr(order, 'status', 'en_attente'),
                     'created_at': order.created_at.strftime('%Y-%m-%d %H:%M:%S') if order.created_at else '',
-                    'items_count': 0
+                    'items_count': len(getattr(order, 'items', []))
                 })
         except Exception as e:
             print(f"Erreur commandes: {e}")
@@ -723,7 +685,7 @@ def admin_settings(request):
                     'adresse': restaurant.adresse,
                     'telephone': restaurant.telephone,
                     'email': restaurant.email,
-                    'horaires_ouverture': restaurant.horaires_ouverture
+                    'description': restaurant.description
                 },
                 'settings': {
                     'commande_min': float(settings.commande_min),
@@ -811,24 +773,19 @@ def _sales_report(start_date, end_date):
     ).exclude(status='panier')
     
     total_orders = orders.count()
-    total_revenue = orders.aggregate(total=Sum('prix_total'))['total'] or 0
-    avg_order_value = orders.aggregate(avg=Avg('prix_total'))['avg'] or 0
+    total_revenue = orders.aggregate(total=Sum('total_amount'))['total'] or 0
+    avg_order_value = orders.aggregate(avg=Avg('total_amount'))['avg'] or 0
     
     # Ventes par jour
     daily_sales = orders.extra(
         select={'day': 'date(created_at)'}
     ).values('day').annotate(
         orders_count=Count('id'),
-        revenue=Sum('prix_total')
+        revenue=Sum('total_amount')
     ).order_by('day')
     
-    # Top plats
-    top_dishes = OrderItem.objects.filter(
-        order__created_at__date__gte=start_date,
-        order__created_at__date__lte=end_date
-    ).exclude(order__status='panier').values('custom_dish__base').annotate(
-        quantity=Sum('quantity')
-    ).order_by('-quantity')[:10]
+    # Top plats (simplifié car OrderItem n'existe plus)
+    top_dishes = []
     
     return Response({
         'period': {'start': start_date, 'end': end_date},
@@ -870,21 +827,77 @@ def _inventory_report():
 
 def _staff_report():
     """Rapport du personnel"""
-    staff = UserProfile.objects.filter(
-        role__in=['admin', 'personnel', 'chef']
-    )
+    # Utiliser is_staff au lieu du champ role
+    staff = User.objects.filter(is_staff=True)
     
-    active_staff = staff.filter(user__is_active=True)
-    inactive_staff = staff.filter(user__is_active=False)
-    
-    by_role = staff.values('role').annotate(
-        count=Count('id'),
-        active_count=Count('id', filter=Q(user__is_active=True))
-    )
+    active_staff = staff.filter(is_active=True)
+    inactive_staff = staff.filter(is_active=False)
     
     return Response({
         'total_staff': staff.count(),
         'active_staff': active_staff.count(),
         'inactive_staff': inactive_staff.count(),
-        'by_role': by_role
+        'by_role': []  # Plus de rôles spécifiques
     })
+
+@api_view(['GET'])
+@permission_classes([IsAdminPermission])
+def admin_statistics(request):
+    """API pour les statistiques du dashboard admin"""
+    try:
+        # Statistiques des commandes
+        today = timezone.now().date()
+        orders_today = Order.objects.filter(
+            created_at__date=today
+        ).exclude(status='panier')
+        
+        total_orders_today = orders_today.count()
+        revenue_today = orders_today.aggregate(
+            total=Sum('total_amount')
+        )['total'] or 0
+        
+        # Commandes en attente
+        pending_orders = Order.objects.filter(
+            status='en_attente'
+        ).exclude(status='panier').count()
+        
+        # Alertes stock bas
+        low_stock_ingredients = Ingredient.objects.filter(
+            stock_actuel__lte=F('stock_min')
+        ).count()
+        
+        # Statistiques générales
+        total_orders = Order.objects.exclude(status='panier').count()
+        total_revenue = Order.objects.exclude(status='panier').aggregate(
+            total=Sum('total_amount')
+        )['total'] or 0
+        
+        return Response({
+            'orders': {
+                'today': total_orders_today,
+                'total': total_orders,
+                'pending': pending_orders
+            },
+            'revenue': {
+                'today': float(revenue_today),
+                'total': float(total_revenue)
+            },
+            'alerts': {
+                'low_stock_ingredients': low_stock_ingredients,
+                'pending_orders': pending_orders
+            },
+            'restaurants': {
+                'total': Restaurant.objects.count(),
+                'active': Restaurant.objects.filter(actif=True).count()
+            },
+            'menu_items': {
+                'total': MenuItem.objects.count(),
+                'available': MenuItem.objects.filter(disponible=True).count()
+            }
+        })
+        
+    except Exception as e:
+        return Response(
+            {'error': f'Erreur lors du chargement des statistiques: {str(e)}'}, 
+            status=500
+        )

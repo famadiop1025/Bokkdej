@@ -8,6 +8,11 @@ String getApiBaseUrl() {
 }
 
 class AdminStatsPage extends StatefulWidget {
+  final String token;
+  final int? restaurantId;
+
+  AdminStatsPage({required this.token, this.restaurantId});
+
   @override
   _AdminStatsPageState createState() => _AdminStatsPageState();
 }
@@ -15,6 +20,7 @@ class AdminStatsPage extends StatefulWidget {
 class _AdminStatsPageState extends State<AdminStatsPage> {
   Map<String, dynamic> stats = {};
   bool isLoading = true;
+  String? error;
 
   @override
   void initState() {
@@ -24,18 +30,15 @@ class _AdminStatsPageState extends State<AdminStatsPage> {
 
   Future<void> _loadStats() async {
     try {
-      final prefs = await SharedPreferences.getInstance();
-      final token = prefs.getString('auth_token');
-      
-      if (token == null) {
-        Navigator.pushReplacementNamed(context, '/login');
-        return;
-      }
-
+      final uri = Uri.parse('${getApiBaseUrl()}/api/admin/statistics/').replace(
+        queryParameters: {
+          if (widget.restaurantId != null) 'restaurant': widget.restaurantId.toString(),
+        },
+      );
       final response = await http.get(
-        Uri.parse('${getApiBaseUrl()}/api/admin/stats/'),
+        uri,
         headers: {
-          'Authorization': 'Bearer $token',
+          'Authorization': 'Bearer ${widget.token}',
           'Content-Type': 'application/json',
         },
       );
@@ -51,6 +54,7 @@ class _AdminStatsPageState extends State<AdminStatsPage> {
       } else {
         setState(() {
           isLoading = false;
+          error = 'Erreur ${response.statusCode}';
         });
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(content: Text('Erreur lors du chargement des statistiques')),
@@ -59,6 +63,7 @@ class _AdminStatsPageState extends State<AdminStatsPage> {
     } catch (e) {
       setState(() {
         isLoading = false;
+        error = e.toString();
       });
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('Erreur de connexion: $e')),
@@ -132,27 +137,27 @@ class _AdminStatsPageState extends State<AdminStatsPage> {
                       mainAxisSpacing: 16,
                       children: [
                         _buildStatCard(
-                          'Commandes Total',
-                          '${stats['total_commandes'] ?? 0}',
+                          'Commandes du jour',
+                          '${(stats['orders'] ?? {})['today'] ?? 0}',
                           Icons.shopping_cart,
                           Colors.blue,
                         ),
                         _buildStatCard(
-                          'Revenus du Mois',
-                          '${stats['revenus_mois'] ?? 0}€',
-                          Icons.euro,
+                          'Revenus du mois',
+                          '${((stats['revenue'] ?? {})['month'] ?? 0).toStringAsFixed(0)} F',
+                          Icons.attach_money,
                           Colors.green,
                         ),
                         _buildStatCard(
-                          'Plats Vendus',
-                          '${stats['plats_vendus'] ?? 0}',
-                          Icons.restaurant_menu,
+                          'Commandes (30j)',
+                          '${(stats['orders'] ?? {})['month'] ?? 0}',
+                          Icons.timeline,
                           Colors.orange,
                         ),
                         _buildStatCard(
-                          'Clients Actifs',
-                          '${stats['clients_actifs'] ?? 0}',
-                          Icons.people,
+                          'Panier moyen',
+                          '${(stats['avg_order_value'] ?? 0).toStringAsFixed(0)} F',
+                          Icons.receipt_long,
                           Colors.purple,
                         ),
                       ],
@@ -174,18 +179,18 @@ class _AdminStatsPageState extends State<AdminStatsPage> {
                             ),
                           ),
                           SizedBox(height: 16),
-                          ...(stats['plats_populaires'] as List<dynamic>? ?? []).take(5).map((plat) {
+                          ...(_extractPopular(stats).take(5).map((plat) {
                             return Padding(
                               padding: EdgeInsets.only(bottom: 8),
                               child: Row(
                                 mainAxisAlignment: MainAxisAlignment.spaceBetween,
                                 children: [
-                                  Text(plat['nom'] ?? 'Plat'),
-                                  Text('${plat['ventes'] ?? 0} ventes'),
+                                  Text(plat['label'] ?? 'Plat'),
+                                  Text('${plat['quantity'] ?? 0} ventes'),
                                 ],
                               ),
                             );
-                          }).toList(),
+                          }).toList()),
                         ],
                       ),
                     ),
@@ -194,5 +199,22 @@ class _AdminStatsPageState extends State<AdminStatsPage> {
               ),
             ),
     );
+  }
+
+  List<Map<String, dynamic>> _extractPopular(Map<String, dynamic> s) {
+    // Adapter aux retours de admin_statistics (popular_dishes) ou fallback
+    final List<Map<String, dynamic>> out = [];
+    final popular = s['popular_dishes'];
+    if (popular is List) {
+      for (final item in popular) {
+        if (item is Map<String, dynamic>) {
+          out.add({
+            'label': item['label'] ?? item['custom_dish__base']?.toString() ?? 'Plat',
+            'quantity': item['total_quantity'] ?? item['count'] ?? 0,
+          });
+        }
+      }
+    }
+    return out;
   }
 }

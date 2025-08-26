@@ -6,6 +6,7 @@ import '../panier_page.dart';
 import '../historique_commandes_page.dart';
 import '../admin_dashboard.dart';
 import '../selection_restaurant_page.dart';
+import '../staff_login_page.dart';
 
 class AppNavigation {
   static const String home = '/';
@@ -15,6 +16,7 @@ class AppNavigation {
   static const String historique = '/historique';
   static const String admin = '/admin';
   static const String restaurantChoice = '/restaurant-choice';
+  static const String staffLogin = '/staff-login';
 
   static Route<dynamic> generateRoute(RouteSettings settings, String token) {
     switch (settings.name) {
@@ -45,6 +47,10 @@ class AppNavigation {
       case restaurantChoice:
         return MaterialPageRoute(
           builder: (_) => SelectionRestaurantPage(token: token),
+        );
+      case staffLogin:
+        return MaterialPageRoute(
+          builder: (_) => StaffLoginPage(),
         );
       default:
         return MaterialPageRoute(

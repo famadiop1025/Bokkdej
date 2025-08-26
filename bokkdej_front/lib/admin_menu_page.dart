@@ -1,6 +1,9 @@
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'dart:convert';
+import 'admin_page.dart';
+import 'add_plat_page.dart';
+import 'edit_plat_page.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 String getApiBaseUrl() {
@@ -28,7 +31,10 @@ class _AdminMenuPageState extends State<AdminMenuPage> {
       final token = prefs.getString('auth_token');
       
       if (token == null) {
-        Navigator.pushReplacementNamed(context, '/login');
+        Navigator.pushReplacement(
+          context,
+          MaterialPageRoute(builder: (_) => AdminPage(token: '', userRole: 'admin')),
+        );
         return;
       }
 
@@ -47,7 +53,10 @@ class _AdminMenuPageState extends State<AdminMenuPage> {
           isLoading = false;
         });
       } else if (response.statusCode == 401) {
-        Navigator.pushReplacementNamed(context, '/login');
+        Navigator.pushReplacement(
+          context,
+          MaterialPageRoute(builder: (_) => AdminPage(token: '', userRole: 'admin')),
+        );
       } else {
         setState(() {
           isLoading = false;
@@ -150,7 +159,12 @@ class _AdminMenuPageState extends State<AdminMenuPage> {
                 ),
                 ElevatedButton.icon(
                   onPressed: () {
-                    Navigator.pushNamed(context, '/admin/add-plat');
+                    Navigator.push(
+                      context,
+                      MaterialPageRoute(
+                        builder: (context) => AddPlatPage(),
+                      ),
+                    );
                   },
                   icon: Icon(Icons.add),
                   label: Text('Ajouter'),
@@ -324,10 +338,11 @@ class _AdminMenuPageState extends State<AdminMenuPage> {
                                           children: [
                                             IconButton(
                                               onPressed: () {
-                                                Navigator.pushNamed(
+                                                Navigator.push(
                                                   context,
-                                                  '/admin/edit-plat',
-                                                  arguments: item,
+                                                  MaterialPageRoute(
+                                                    builder: (context) => EditPlatPage(plat: item),
+                                                  ),
                                                 );
                                               },
                                               icon: Icon(Icons.edit, color: Colors.blue),

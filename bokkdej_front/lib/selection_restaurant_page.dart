@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'dart:convert';
 import 'constants/app_colors.dart';
+import 'widgets/safe_image_widget.dart';
 
 class SelectionRestaurantPage extends StatefulWidget {
   final String? token;
@@ -373,28 +374,20 @@ class _SelectionRestaurantPageState extends State<SelectionRestaurantPage> {
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               // Logo du restaurant (si disponible)
-              if (restaurant['logo'] != null)
+              if ((restaurant['logo_url'] ?? restaurant['logo']) != null)
                 Center(
                   child: ClipRRect(
                     borderRadius: BorderRadius.circular(8),
-                    child: Image.network(
-                      restaurant['logo'],
+                    child: SafeImageWidget(
+                      imageUrl: (restaurant['logo_url'] ?? restaurant['logo'])?.toString(),
                       height: 80,
                       width: 120,
                       fit: BoxFit.cover,
-                      errorBuilder: (context, error, stackTrace) {
-                        return Container(
-                          height: 80,
-                          width: 120,
-                          color: Colors.grey[200],
-                          child: Icon(Icons.restaurant, size: 40, color: Colors.grey),
-                        );
-                      },
                     ),
                   ),
                 ),
               
-              if (restaurant['logo'] != null) SizedBox(height: 16),
+              if ((restaurant['logo_url'] ?? restaurant['logo']) != null) SizedBox(height: 16),
               
               // Nom du restaurant
               Text(
@@ -480,12 +473,30 @@ class RestaurantMenuPage extends StatelessWidget {
     return Scaffold(
       backgroundColor: Colors.grey[50],
       appBar: AppBar(
-        title: Text(
-          restaurant['nom'],
-          style: TextStyle(
-            color: Colors.white,
-            fontWeight: FontWeight.bold,
-          ),
+        title: Row(
+          children: [
+            ClipRRect(
+              borderRadius: BorderRadius.circular(6),
+              child: SizedBox(
+                width: 28,
+                height: 28,
+                child: (((restaurant['logo_url'] ?? restaurant['logo']) ?? '') as String).toString().isNotEmpty
+                  ? SafeImageWidget(imageUrl: (restaurant['logo_url'] ?? restaurant['logo'])?.toString(), width: 28, height: 28, fit: BoxFit.cover)
+                  : Container(color: Colors.white.withOpacity(0.3), child: Icon(Icons.business, size: 18, color: Colors.white)),
+              ),
+            ),
+            SizedBox(width: 8),
+            Expanded(
+              child: Text(
+                restaurant['nom'],
+                style: TextStyle(
+                  color: Colors.white,
+                  fontWeight: FontWeight.bold,
+                ),
+                overflow: TextOverflow.ellipsis,
+              ),
+            ),
+          ],
         ),
         backgroundColor: AppColors.primary,
         elevation: 2,
@@ -591,13 +602,15 @@ class RestaurantMenuPage extends StatelessWidget {
         child: Row(
           children: [
             // Image du plat
-            if (item['image'] != null)
+            if ((item['image_url'] ?? item['image']) != null)
               ClipRRect(
                 borderRadius: BorderRadius.circular(8),
                 child: Image.network(
-                  item['image'].toString().startsWith('http') 
-                    ? item['image']
-                    : 'http://localhost:8000${item['image']}',
+                  (() {
+                    final src = (item['image_url'] ?? item['image']).toString();
+                    if (src.startsWith('http')) return src;
+                    return 'http://localhost:8000$src';
+                  })(),
                   width: 60,
                   height: 60,
                   fit: BoxFit.cover,

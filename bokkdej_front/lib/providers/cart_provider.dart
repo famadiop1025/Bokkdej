@@ -1,6 +1,8 @@
 import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 import 'dart:convert';
+import 'package:shared_preferences/shared_preferences.dart';
+import '../services/device_id_service.dart';
 
 String getApiBaseUrl() {
   return 'http://localhost:8000';
@@ -9,23 +11,35 @@ String getApiBaseUrl() {
 class CartProvider with ChangeNotifier {
   List<Map<String, dynamic>> _items = [];
   String _token;
+  String? _phone;
+  int? _restaurantId;
+  int? _selectedRestaurantId;
+  String? _selectedRestaurantName;
 
   CartProvider(this._token);
-
+  String get token => _token;
+  
   List<Map<String, dynamic>> get items => _items;
+  String? get phone => _phone;
+  int? get restaurantId => _restaurantId;
+  int? get selectedRestaurantId => _selectedRestaurantId;
+  String? get selectedRestaurantName => _selectedRestaurantName;
 
-  int get itemCount => _items.length;
-
-  double get totalAmount {
-    double total = 0.0;
-    for (var item in _items) {
-      total += double.tryParse(item['prix'].toString()) ?? 0.0;
-    }
-    return total;
+  void setPhone(String phone) {
+    _phone = phone;
+    notifyListeners();
   }
 
-  void addItem(Map<String, dynamic> item) {
-    _items.add(item);
+  void setRestaurant(int restaurantId, String restaurantName) {
+    _selectedRestaurantId = restaurantId;
+    _selectedRestaurantName = restaurantName;
+    notifyListeners();
+  }
+
+  void addItem(Map<String, dynamic> item, {int quantity = 1}) {
+    final itemWithQuantity = Map<String, dynamic>.from(item);
+    itemWithQuantity['quantity'] = quantity;
+    _items.add(itemWithQuantity);
     notifyListeners();
   }
 
@@ -36,37 +50,69 @@ class CartProvider with ChangeNotifier {
     }
   }
 
-  void clearCart() {
+  void clear() {
     _items.clear();
     notifyListeners();
   }
 
-  Future<bool> submitOrder() async {
-    if (_items.isEmpty) return false;
+  double get totalAmount => _items.fold(0.0, (sum, item) {
+    final prix = item['prix'];
+    final quantity = item['quantity'] as int? ?? 1;
+    
+    // Convertir le prix en double, peu importe s'il est string ou num
+    double prixValue = 0.0;
+    if (prix is num) {
+      prixValue = prix.toDouble();
+    } else if (prix is String) {
+      prixValue = double.tryParse(prix) ?? 0.0;
+    }
+    
+    return sum + (prixValue * quantity);
+  });
+  
+  int get itemCount => _items.length;
 
+  // Getters pour ultra_safe_panier_wrapper
+  List<Map<String, dynamic>> get panier => _items;
+  bool get isLoading => false; // TODO: Implémenter la logique de chargement
+  String? get error => null; // TODO: Implémenter la gestion d'erreur
+  double get total => totalAmount;
+  
+  // Méthode pour charger le panier
+  Future<void> loadPanier() async {
+    // TODO: Implémenter le chargement du panier depuis l'API
+    notifyListeners();
+  }
+
+  Future<Map<String, dynamic>> submitOrder() async {
     try {
-      final orderData = {
-        'items': _items,
-        'total': totalAmount,
-        'timestamp': DateTime.now().toIso8601String(),
-      };
-
       final response = await http.post(
-        Uri.parse('${getApiBaseUrl()}/api/orders/'),
+        Uri.parse('${getApiBaseUrl()}/api/orders/valider-panier/'),
         headers: {
           'Content-Type': 'application/json',
+          if (_token.isNotEmpty) 'Authorization': 'Bearer $_token',
         },
-        body: json.encode(orderData),
+        body: json.encode({
+          'items': _items,
+          'phone': _phone,
+          'restaurant_id': _selectedRestaurantId,
+        }),
       );
 
-      if (response.statusCode == 200 || response.statusCode == 201) {
-        clearCart();
-        return true;
+      if (response.statusCode == 200) {
+        final data = json.decode(response.body);
+        return {'ok': true, 'data': data};
+      } else {
+        final errorData = json.decode(response.body);
+        return {'ok': false, 'message': errorData.get('error', 'Erreur lors de la commande')};
       }
-      return false;
     } catch (e) {
-      print('Erreur lors de la soumission de la commande: $e');
-      return false;
+      return {'ok': false, 'message': 'Erreur de connexion: $e'};
     }
+  }
+
+  void setRestaurantId(int id) {
+    _restaurantId = id;
+    notifyListeners();
   }
 }

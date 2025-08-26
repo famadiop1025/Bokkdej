@@ -2,6 +2,8 @@ import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'dart:convert';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'order_tracking_page.dart';
+import 'pin_login_page.dart';
 
 String getApiBaseUrl() {
   return 'http://localhost:8000';
@@ -28,7 +30,10 @@ class _HistoriquePageState extends State<HistoriquePage> {
       final token = prefs.getString('auth_token');
       
       if (token == null) {
-        Navigator.pushReplacementNamed(context, '/login');
+        Navigator.pushReplacement(
+          context,
+          MaterialPageRoute(builder: (_) => PinLoginPage()),
+        );
         return;
       }
 
@@ -47,7 +52,10 @@ class _HistoriquePageState extends State<HistoriquePage> {
           isLoading = false;
         });
       } else if (response.statusCode == 401) {
-        Navigator.pushReplacementNamed(context, '/login');
+        Navigator.pushReplacement(
+          context,
+          MaterialPageRoute(builder: (_) => PinLoginPage()),
+        );
       } else {
         setState(() {
           isLoading = false;
@@ -249,10 +257,15 @@ class _HistoriquePageState extends State<HistoriquePage> {
                                     if (order['statut'] != 'livre' && order['statut'] != 'annule')
                                       ElevatedButton(
                                         onPressed: () {
-                                          Navigator.pushNamed(
+                                          Navigator.push(
                                             context,
-                                            '/suivi',
-                                            arguments: order['id'],
+                                            MaterialPageRoute(
+                                              builder: (context) => OrderTrackingPage(
+                                                orderId: order['id'], 
+                                                token: '', // TODO: Récupérer le token
+                                                phone: '', // TODO: Récupérer le phone
+                                              ),
+                                            ),
                                           );
                                         },
                                         child: Text('Suivre'),

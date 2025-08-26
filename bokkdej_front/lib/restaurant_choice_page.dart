@@ -1,7 +1,11 @@
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'dart:convert';
+import 'package:provider/provider.dart';
+import 'providers/restaurant_provider.dart';
 import 'menu_page.dart';
+import 'constants/app_colors.dart';
+import 'widgets/safe_image_widget.dart';
 
 String getApiBaseUrl() {
   return 'http://localhost:8000';
@@ -112,9 +116,14 @@ class _RestaurantChoicePageState extends State<RestaurantChoicePage> {
                                 margin: EdgeInsets.only(bottom: 12),
                                 elevation: 4,
                                 child: ListTile(
-                                  leading: CircleAvatar(
-                                    backgroundColor: Color(0xFFFFD700),
-                                    child: Icon(Icons.restaurant, color: Color(0xFF2C2C2C)),
+                                  leading: ClipRRect(
+                                    borderRadius: BorderRadius.circular(30),
+                                    child: SafeImageWidget(
+                                      imageUrl: (restaurant['logo_url'] ?? restaurant['logo'])?.toString(),
+                                      width: 48,
+                                      height: 48,
+                                      fit: BoxFit.cover,
+                                    ),
                                   ),
                                   title: Text(
                                     restaurant['nom'] ?? 'Restaurant ${index + 1}',
@@ -139,11 +148,16 @@ class _RestaurantChoicePageState extends State<RestaurantChoicePage> {
                                     ],
                                   ),
                                   trailing: Icon(Icons.arrow_forward_ios),
-                                  onTap: () {
+                                  onTap: () async {
+                                    // Sélectionner le restaurant dans le provider
+                                    final restaurantProvider = Provider.of<RestaurantProvider>(context, listen: false);
+                                    await restaurantProvider.selectRestaurant(restaurant['id']);
+                                    
+                                    // Naviguer vers le menu
                                     Navigator.push(
                                       context,
                                       MaterialPageRoute(
-                                        builder: (context) => MenuPage(
+                                        builder: (_) => MenuPage(
                                           restaurantId: restaurant['id'],
                                           restaurantName: restaurant['nom'] ?? 'Restaurant',
                                         ),

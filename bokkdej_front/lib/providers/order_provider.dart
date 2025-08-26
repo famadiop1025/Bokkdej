@@ -1,7 +1,7 @@
 import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 import 'dart:convert';
-import '../services/notification_service.dart';
+
 import '../pin_login_page.dart'; // Pour getApiBaseUrl
 import 'dart:async';
 
@@ -70,7 +70,7 @@ class OrderProvider with ChangeNotifier {
   bool _isLoading = false;
   String? _error;
   final String _token;
-  final NotificationService _notificationService = NotificationService();
+  // Notifications supprimées
   Map<int, String> _previousStatuses = {};
   Timer? _pollingTimer;
 
@@ -133,31 +133,18 @@ class OrderProvider with ChangeNotifier {
   void _notifyStatusChange(OrderItem order) {
     switch (order.status) {
       case 'en_preparation':
-        _notificationService.showPreparationNotification(order.id);
+        // Notifications supprimées
         break;
       case 'pret':
-        _notificationService.showReadyNotification(order.id);
+        // Notifications supprimées
         break;
       case 'termine':
-        _notificationService.showCompletedNotification(order.id);
+        // Notifications supprimées
         break;
     }
   }
 
-  // Méthode pour forcer une notification (pour les tests)
-  void testNotification(int orderId, String status) {
-    switch (status) {
-      case 'en_preparation':
-        _notificationService.showPreparationNotification(orderId);
-        break;
-      case 'pret':
-        _notificationService.showReadyNotification(orderId);
-        break;
-      case 'termine':
-        _notificationService.showCompletedNotification(orderId);
-        break;
-    }
-  }
+  // Notifications supprimées
 
   void _setLoading(bool loading) {
     _isLoading = loading;

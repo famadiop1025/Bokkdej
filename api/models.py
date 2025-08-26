@@ -4,6 +4,7 @@ from django.db.models.signals import post_save
 from django.dispatch import receiver
 from pyfcm import FCMNotification
 from django.conf import settings
+from django.utils import timezone
 
 class Base(models.Model):
     nom = models.CharField(max_length=100)
@@ -31,8 +32,8 @@ class MenuItem(models.Model):
     type = models.CharField(max_length=20, choices=TYPE_CHOICES)
     category = models.ForeignKey('Category', on_delete=models.SET_NULL, null=True, blank=True)
     restaurant = models.ForeignKey('Restaurant', on_delete=models.CASCADE, related_name='menu_items', null=True, blank=True)
-    calories = models.PositiveIntegerField()
-    temps_preparation = models.PositiveIntegerField(help_text='Temps en minutes')
+    calories = models.PositiveIntegerField(null=True, blank=True)
+    temps_preparation = models.PositiveIntegerField(help_text='Temps en minutes', null=True, blank=True)
     description = models.TextField(blank=True, null=True)
     disponible = models.BooleanField(default=True, null=True, blank=True)
     populaire = models.BooleanField(default=False, null=True, blank=True)
@@ -97,85 +98,69 @@ class Ingredient(models.Model):
 
 class CustomDish(models.Model):
     base = models.CharField(max_length=100)
-    ingredients = models.ManyToManyField(Ingredient)
-    user = models.ForeignKey(User, on_delete=models.CASCADE, null=True, blank=True)  # Rendu optionnel
-    prix = models.DecimalField(max_digits=6, decimal_places=2)
-    created_at = models.DateTimeField(auto_now_add=True)
+    ingredients = models.ManyToManyField(Ingredient, through='CustomDishIngredient')
+    restaurant = models.ForeignKey('Restaurant', on_delete=models.CASCADE, related_name='custom_dishes', null=True, blank=True)
+    prix_total = models.DecimalField(max_digits=8, decimal_places=2, null=True, blank=True)
+    disponible = models.BooleanField(default=True, null=True, blank=True)
+    
+    created_at = models.DateTimeField(auto_now_add=True, null=True, blank=True)
+    updated_at = models.DateTimeField(auto_now=True, null=True, blank=True)
 
     def __str__(self):
-        return f"{self.base} + {', '.join([i.nom for i in self.ingredients.all()])}"
+        return f"{self.base} - {self.prix_total} F"
+    
+    def calculer_prix_total(self):
+        """Calculer le prix total basé sur les ingrédients"""
+        total = 0
+        for ingredient in self.ingredients.all():
+            total += ingredient.prix
+        self.prix_total = total
+        self.save()
+        return total
 
-class OrderItem(models.Model):
-    order = models.ForeignKey('Order', on_delete=models.CASCADE, related_name='order_items')
+class CustomDishIngredient(models.Model):
     custom_dish = models.ForeignKey(CustomDish, on_delete=models.CASCADE)
-    quantity = models.PositiveIntegerField(default=1)
-
-    def __str__(self):
-        return f"{self.custom_dish} x {self.quantity} (Commande {self.order.id})"
-
-class Order(models.Model):
-    STATUS_CHOICES = [
-        ('panier', 'Panier'),
-        ('en_attente', 'En attente'),
-        ('en_preparation', 'En préparation'),
-        ('pret', 'Prêt'),
-        ('termine', 'Terminé'),
-    ]
-    user = models.ForeignKey(User, on_delete=models.CASCADE, null=True, blank=True)  # Rendu optionnel
-    phone = models.CharField(max_length=15, null=True, blank=True)  # Ajout du champ téléphone
-    prix_total = models.DecimalField(max_digits=8, decimal_places=2)
-    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='panier')
-    created_at = models.DateTimeField(auto_now_add=True)
-    restaurant = models.ForeignKey('Restaurant', on_delete=models.CASCADE, null=True, blank=True)
-
-    def __str__(self):
-        if self.user:
-            return f"Commande - {self.user.username}"
-        elif self.phone:
-            return f"Commande - {self.phone}"
-        return "Commande (anonyme)"
-
-class UserProfile(models.Model):
-    ROLE_CHOICES = [
-        ('admin', 'Admin'),
-        ('personnel', 'Personnel'),
-        ('chef', 'Chef'),
-        ('client', 'Client'),
-    ]
-    user = models.OneToOneField(User, on_delete=models.CASCADE)
-    role = models.CharField(max_length=15, choices=ROLE_CHOICES, default='client')
-    phone = models.CharField(max_length=15, unique=True, null=True, blank=True)
-    pin_code = models.CharField(max_length=10, null=True, blank=True)
-    restaurant = models.ForeignKey('Restaurant', on_delete=models.CASCADE, null=True, blank=True)
-    fcm_token = models.CharField(max_length=255, null=True, blank=True)
-    date_embauche = models.DateField(null=True, blank=True)
-    salaire = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
-    actif = models.BooleanField(default=True, null=True, blank=True)
-
-    def __str__(self):
-        return f"{self.user.username} - {self.role}"
+    ingredient = models.ForeignKey(Ingredient, on_delete=models.CASCADE)
+    quantite = models.PositiveIntegerField(default=1)
+    
+    class Meta:
+        unique_together = ['custom_dish', 'ingredient']
 
 class Restaurant(models.Model):
     STATUT_CHOICES = [
-        ('en_attente', 'En attente de validation'),
-        ('valide', 'Validé'),
+        ('actif', 'Actif'),
+        ('inactif', 'Inactif'),
         ('suspendu', 'Suspendu'),
-        ('rejete', 'Rejeté'),
+        ('en_attente', 'En attente de validation'),
     ]
     
-    nom = models.CharField(max_length=100, unique=True)
+    nom = models.CharField(max_length=100)
     adresse = models.TextField(blank=True, null=True)
-    telephone = models.CharField(max_length=15, blank=True, null=True)
+    telephone = models.CharField(max_length=20, blank=True, null=True)
     email = models.EmailField(blank=True, null=True)
-    horaires_ouverture = models.JSONField(default=dict, blank=True, null=True)
+    description = models.TextField(blank=True, null=True)
+    statut = models.CharField(max_length=20, choices=STATUT_CHOICES, default='actif')
+    actif = models.BooleanField(default=True)
     logo = models.ImageField(upload_to='restaurant_logos/', blank=True, null=True)
-    statut = models.CharField(max_length=20, choices=STATUT_CHOICES, default='en_attente')
-    actif = models.BooleanField(default=True, null=True, blank=True)
-    date_validation = models.DateTimeField(null=True, blank=True)
-    validé_par = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True, related_name='restaurants_valides')
+    created_at = models.DateTimeField(auto_now_add=True, null=True, blank=True)
+    updated_at = models.DateTimeField(auto_now=True, null=True, blank=True)
+
+    class Meta:
+        ordering = ['nom']
 
     def __str__(self):
         return self.nom
+
+    def save(self, *args, **kwargs):
+        # Gérer les champs de date pour les restaurants existants
+        if not self.pk:  # Nouveau restaurant
+            from django.utils import timezone
+            if not self.created_at:
+                self.created_at = timezone.now()
+        if not self.updated_at:
+            from django.utils import timezone
+            self.updated_at = timezone.now()
+        super().save(*args, **kwargs)
 
 class SystemSettings(models.Model):
     """Configuration système du restaurant"""
@@ -219,6 +204,39 @@ class Category(models.Model):
 
     def __str__(self):
         return self.nom
+
+class UserProfile(models.Model):
+    user = models.OneToOneField(User, on_delete=models.CASCADE)
+    phone = models.CharField(max_length=20, blank=True, null=True)
+    fcm_token = models.CharField(max_length=500, blank=True, null=True)
+    
+    def __str__(self):
+        return f"Profile de {self.user.username}"
+
+class Order(models.Model):
+    STATUS_CHOICES = [
+        ('panier', 'Panier'),
+        ('en_attente', 'En attente'),
+        ('en_preparation', 'En préparation'),
+        ('pret', 'Prêt'),
+        ('termine', 'Terminé'),
+        ('annule', 'Annulé'),
+    ]
+    
+    user = models.ForeignKey(User, on_delete=models.CASCADE, null=True, blank=True)
+    restaurant = models.ForeignKey(Restaurant, on_delete=models.CASCADE)
+    items = models.JSONField(default=list)
+    total_amount = models.DecimalField(max_digits=10, decimal_places=2)
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='panier')
+    phone = models.CharField(max_length=20, blank=True, null=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    
+    class Meta:
+        ordering = ['-created_at']
+    
+    def __str__(self):
+        return f"Commande #{self.id} - {self.restaurant.nom}"
 
 @receiver(post_save, sender=User)
 def create_user_profile(sender, instance, created, **kwargs):
