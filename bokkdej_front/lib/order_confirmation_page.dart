@@ -1,17 +1,13 @@
 import 'package:flutter/material.dart';
 
 class OrderConfirmationPage extends StatelessWidget {
-  final String token;
+  final Map<String, dynamic> orderData;
   final VoidCallback? onHomePressed;
-  final List<Map<String, dynamic>> orderItems;
-  final double totalPrice;
 
   const OrderConfirmationPage({
     Key? key,
-    required this.token,
+    required this.orderData,
     this.onHomePressed,
-    required this.orderItems,
-    required this.totalPrice,
   }) : super(key: key);
 
   @override
@@ -33,10 +29,10 @@ class OrderConfirmationPage extends StatelessWidget {
               Container(
                 width: 120,
                 height: 120,
-                decoration: BoxDecoration(
-                  color: vert.withOpacity(0.1),
-                  shape: BoxShape.circle,
-                ),
+                                 decoration: BoxDecoration(
+                   color: vert.withAlpha(26),
+                   shape: BoxShape.circle,
+                 ),
                 child: Icon(
                   Icons.check_circle,
                   size: 80,
@@ -57,53 +53,53 @@ class OrderConfirmationPage extends StatelessWidget {
               ),
               const SizedBox(height: 16),
               
-              // Message
-              Text(
-                'Merci pour votre commande. Voici le récapitulatif :',
-                style: TextStyle(
-                  fontSize: 16,
-                  color: noir.withOpacity(0.7),
-                ),
-                textAlign: TextAlign.center,
-              ),
+                             // Message
+               Text(
+                 'Merci pour votre commande. Voici le récapitulatif :',
+                 style: TextStyle(
+                   fontSize: 16,
+                   color: noir.withAlpha(179),
+                 ),
+                 textAlign: TextAlign.center,
+               ),
               const SizedBox(height: 32),
               
-              // Séparateur
-              Container(
-                height: 2,
-                color: orJaune.withOpacity(0.3),
-                margin: const EdgeInsets.symmetric(horizontal: 40),
-              ),
+                             // Séparateur
+               Container(
+                 height: 2,
+                 color: orJaune.withAlpha(77),
+                 margin: const EdgeInsets.symmetric(horizontal: 40),
+               ),
               const SizedBox(height: 24),
               
-              // Récapitulatif de la commande
-              Expanded(
-                child: orderItems.isEmpty
+                             // Récapitulatif de la commande
+               Expanded(
+                 child: (orderData['items'] as List<dynamic>?)?.isEmpty != false
                     ? Center(
                         child: Column(
                           mainAxisAlignment: MainAxisAlignment.center,
                           children: [
-                            Icon(
-                              Icons.receipt_long,
-                              size: 64,
-                              color: noir.withOpacity(0.3),
-                            ),
+                                                         Icon(
+                               Icons.receipt_long,
+                               size: 64,
+                               color: noir.withAlpha(77),
+                             ),
                             const SizedBox(height: 16),
                             Text(
                               'Commande enregistrée',
-                              style: TextStyle(
-                                fontSize: 18,
-                                fontWeight: FontWeight.w500,
-                                color: noir.withOpacity(0.5),
-                              ),
+                                                             style: TextStyle(
+                                 fontSize: 18,
+                                 fontWeight: FontWeight.w500,
+                                 color: noir.withAlpha(128),
+                               ),
                             ),
                             const SizedBox(height: 8),
                             Text(
                               'Votre commande a été enregistrée\navec succès !',
-                              style: TextStyle(
-                                fontSize: 14,
-                                color: noir.withOpacity(0.4),
-                              ),
+                                                             style: TextStyle(
+                                 fontSize: 14,
+                                 color: noir.withAlpha(102),
+                               ),
                               textAlign: TextAlign.center,
                             ),
                           ],
@@ -137,14 +133,14 @@ class OrderConfirmationPage extends StatelessWidget {
                             ),
                             const SizedBox(height: 16),
                             
-                            // Liste des plats
-                            ...orderItems.map((item) => Card(
+                                                         // Liste des plats
+                             ...(orderData['items'] as List<dynamic>?)?.map((item) => Card(
                               margin: const EdgeInsets.only(bottom: 8),
                               child: ListTile(
-                                leading: CircleAvatar(
-                                  backgroundColor: orJaune.withOpacity(0.2),
-                                  child: Icon(Icons.restaurant, color: orJaune, size: 20),
-                                ),
+                                                                 leading: CircleAvatar(
+                                   backgroundColor: orJaune.withAlpha(51),
+                                   child: Icon(Icons.restaurant, color: orJaune, size: 20),
+                                 ),
                                 title: Text(
                                   item['base'] ?? 'Plat personnalisé',
                                   style: TextStyle(
@@ -155,10 +151,10 @@ class OrderConfirmationPage extends StatelessWidget {
                                 subtitle: item['ingredients'] != null && (item['ingredients'] as List).isNotEmpty
                                     ? Text(
                                         '${(item['ingredients'] as List).length} ingrédient(s)',
-                                        style: TextStyle(
-                                          color: noir.withOpacity(0.6),
-                                          fontSize: 12,
-                                        ),
+                                                                                 style: TextStyle(
+                                           color: noir.withAlpha(153),
+                                           fontSize: 12,
+                                         ),
                                       )
                                     : null,
                                 trailing: Text(
@@ -170,18 +166,18 @@ class OrderConfirmationPage extends StatelessWidget {
                                   ),
                                 ),
                               ),
-                            )).toList(),
+                                                         ))?.toList() ?? [],
                             
                             const SizedBox(height: 16),
                             
                             // Total
                             Container(
                               padding: const EdgeInsets.all(16),
-                              decoration: BoxDecoration(
-                                color: orJaune.withOpacity(0.1),
-                                borderRadius: BorderRadius.circular(12),
-                                border: Border.all(color: orJaune.withOpacity(0.3)),
-                              ),
+                                                             decoration: BoxDecoration(
+                                 color: orJaune.withAlpha(26),
+                                 borderRadius: BorderRadius.circular(12),
+                                 border: Border.all(color: orJaune.withAlpha(77)),
+                               ),
                               child: Row(
                                 mainAxisAlignment: MainAxisAlignment.spaceBetween,
                                 children: [
@@ -194,7 +190,7 @@ class OrderConfirmationPage extends StatelessWidget {
                                     ),
                                   ),
                                   Text(
-                                    '${totalPrice.toStringAsFixed(0)} F',
+                                                                         '${(orderData['total'] ?? 0).toStringAsFixed(0)} F',
                                     style: TextStyle(
                                       fontSize: 20,
                                       fontWeight: FontWeight.bold,
@@ -231,13 +227,13 @@ class OrderConfirmationPage extends StatelessWidget {
                                     ],
                                   ),
                                   const SizedBox(height: 4),
-                                  Text(
-                                    DateTime.now().toString().substring(11, 16),
-                                    style: TextStyle(
-                                      color: noir.withOpacity(0.7),
-                                      fontSize: 14,
-                                    ),
-                                  ),
+                                                                     Text(
+                                     DateTime.now().toString().substring(11, 16),
+                                     style: TextStyle(
+                                       color: noir.withAlpha(179),
+                                       fontSize: 14,
+                                     ),
+                                   ),
                                   const SizedBox(height: 12),
                                   Row(
                                     children: [

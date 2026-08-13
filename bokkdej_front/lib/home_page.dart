@@ -338,7 +338,7 @@ class _MainNavigationState extends State<MainNavigation> {
     return MultiProvider(
       providers: [
         ChangeNotifierProvider(create: (_) => RestaurantProvider()),
-        ChangeNotifierProvider(create: (_) => CartProvider(widget.token)),
+        ChangeNotifierProvider(create: (_) => CartProvider()),
         ChangeNotifierProvider(create: (_) => OrderProvider(widget.token)),
         ChangeNotifierProvider(create: (_) => MenuProvider(widget.token)),
         ChangeNotifierProvider(create: (_) => BaseProvider(widget.token)),

@@ -6,7 +6,8 @@ import 'providers/cart_provider.dart';
 import 'panier_page.dart';
 import 'composer_page.dart';
 import 'order_tracking_page.dart';
-import 'package:shared_preferences/shared_preferences.dart';
+import 'providers/restaurant_provider.dart';
+
 
 import 'services/device_id_service.dart';
 import 'dart:async';
@@ -36,10 +37,12 @@ class _MenuPageState extends State<MenuPage> {
   void initState() {
     super.initState();
     _loadMenuData();
-    // Conserver l'id restaurant dans le panier pour la commande
+    // Conserver l'id et le nom du restaurant côté Cart et Restaurant providers
     WidgetsBinding.instance.addPostFrameCallback((_) {
       try {
-        Provider.of<CartProvider>(context, listen: false).setRestaurantId(widget.restaurantId);
+        // Conserver l'id et le nom du restaurant côté Cart et Restaurant providers
+        Provider.of<CartProvider>(context, listen: false).setRestaurant(widget.restaurantId, widget.restaurantName);
+        Provider.of<RestaurantProvider>(context, listen: false).selectRestaurant(widget.restaurantId, name: widget.restaurantName);
       } catch (_) {}
     });
     // Notifications supprimées
@@ -164,8 +167,7 @@ class _MenuPageState extends State<MenuPage> {
                     ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Aucune commande trouvée pour cet appareil')));
                     return;
                   }
-                  final token = Provider.of<CartProvider>(context, listen: false).token;
-                  Navigator.push(context, MaterialPageRoute(builder: (_) => OrderTrackingPage(orderId: orderId!, token: token)));
+                  Navigator.push(context, MaterialPageRoute(builder: (_) => OrderTrackingPage(orderId: orderId!)));
                   return;
                 } else {
                   final phone = controller.text;
@@ -191,8 +193,7 @@ class _MenuPageState extends State<MenuPage> {
                       ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Commande introuvable')));
                       return;
                     }
-                    final token = Provider.of<CartProvider>(context, listen: false).token;
-                    Navigator.push(context, MaterialPageRoute(builder: (_) => OrderTrackingPage(orderId: orderId!, token: token, phone: normalized)));
+                    Navigator.push(context, MaterialPageRoute(builder: (_) => OrderTrackingPage(orderId: orderId!, phone: normalized)));
                   } else {
                     ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Erreur: ${resp.statusCode}')));
                   }

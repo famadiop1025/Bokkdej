@@ -162,7 +162,7 @@ class _AdminMenuPageState extends State<AdminMenuPage> {
                     Navigator.push(
                       context,
                       MaterialPageRoute(
-                        builder: (context) => AddPlatPage(),
+                        builder: (context) => AddPlatPage(token: '', restaurantId: 1),
                       ),
                     );
                   },
@@ -341,7 +341,7 @@ class _AdminMenuPageState extends State<AdminMenuPage> {
                                                 Navigator.push(
                                                   context,
                                                   MaterialPageRoute(
-                                                    builder: (context) => EditPlatPage(plat: item),
+                                                    builder: (context) => EditPlatPage(plat: item, token: ''),
                                                   ),
                                                 );
                                               },

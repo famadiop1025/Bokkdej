@@ -189,7 +189,7 @@ class AdminRestaurantSerializer(serializers.ModelSerializer):
             if not getattr(obj, 'logo', None):
                 return None
             request = self.context.get('request') if hasattr(self, 'context') else None
-            url = obj.logo.url if obj.image else None
+            url = obj.logo.url if obj.logo else None
             return request.build_absolute_uri(url) if request and url else url
         except Exception:
             return None

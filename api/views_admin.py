@@ -248,6 +248,11 @@ class AdminRestaurantViewSet(viewsets.ModelViewSet):
             queryset = queryset.filter(statut=statut)
             
         return queryset.order_by('-id')
+
+    def update(self, request, *args, **kwargs):
+        """Traiter PUT comme une mise à jour partielle pour éviter les 400 sur champs manquants"""
+        kwargs['partial'] = True
+        return super().update(request, *args, **kwargs)
     
     @action(detail=True, methods=['post'])
     def valider_restaurant(self, request, pk=None):

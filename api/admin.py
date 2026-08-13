@@ -6,9 +6,9 @@ class BaseImageAdmin(admin.ModelAdmin):
     """Classe de base pour l'administration avec gestion d'images"""
     
     def image_preview(self, obj):
-        if obj.image:
+        if obj.image and getattr(obj.image, 'url', None):
             return format_html(
-                '<img src="{}" style="max-height: 100px; max-width: 100px; border-radius: 8px;" />',
+                '<img src="{}" alt="aperçu" loading="lazy" referrerpolicy="no-referrer" style="max-height: 100px; max-width: 100px; border-radius: 8px;" />',
                 obj.image.url
             )
         return "Pas d'image"
@@ -103,9 +103,9 @@ class RestaurantAdmin(admin.ModelAdmin):
     search_fields = ['nom', 'telephone', 'email']
     
     def logo_preview(self, obj):
-        if obj.logo:
+        if obj.logo and getattr(obj.logo, 'url', None):
             return format_html(
-                '<img src="{}" style="max-height: 50px; max-width: 50px; border-radius: 8px;" />',
+                '<img src="{}" alt="logo" loading="lazy" referrerpolicy="no-referrer" style="max-height: 50px; max-width: 50px; border-radius: 8px;" />',
                 obj.logo.url
             )
         return "Pas de logo"

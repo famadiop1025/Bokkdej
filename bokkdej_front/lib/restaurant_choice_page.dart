@@ -151,7 +151,7 @@ class _RestaurantChoicePageState extends State<RestaurantChoicePage> {
                                   onTap: () async {
                                     // Sélectionner le restaurant dans le provider
                                     final restaurantProvider = Provider.of<RestaurantProvider>(context, listen: false);
-                                    await restaurantProvider.selectRestaurant(restaurant['id']);
+                                    await restaurantProvider.selectRestaurant(restaurant['id'], name: restaurant['nom']);
                                     
                                     // Naviguer vers le menu
                                     Navigator.push(

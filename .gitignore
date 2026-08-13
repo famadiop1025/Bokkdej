@@ -1,0 +1,40 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+
+# Environnement virtuel
+venv/
+env/
+.venv/
+
+# Django
+db.sqlite3
+*.sqlite3
+
+# Variables d'environnement
+.env
+.env.*
+
+# Fichiers statiques et médias locaux
+media/
+staticfiles/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Flutter
+bokkdej_front/.dart_tool/
+bokkdej_front/.flutter-plugins
+bokkdej_front/.flutter-plugins-dependencies
+bokkdej_front/.packages
+bokkdej_front/build/
+bokkdej_front/.pub-cache/
+
+# Logs
+*.log

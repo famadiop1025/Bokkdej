@@ -1,11 +1,11 @@
 from rest_framework import viewsets, permissions
 from django.db.models import Q
 from django.contrib.auth.models import User
-from .models import MenuItem, Ingredient, CustomDish, Order, Restaurant, Base
+from .models import MenuItem, Ingredient, CustomDish, Order, Restaurant, Base, WavePaymentLog
 from .serializers import (
     MenuItemSerializer, IngredientSerializer, CustomDishSerializer, UserSerializer, RestaurantSerializer, BaseSerializer, OrderSerializer
 )
-from rest_framework.permissions import BasePermission, SAFE_METHODS
+from rest_framework.permissions import BasePermission, SAFE_METHODS, AllowAny
 from rest_framework.decorators import action, api_view, permission_classes
 from rest_framework.response import Response
 from rest_framework.parsers import MultiPartParser, FormParser
@@ -15,6 +15,8 @@ from rest_framework_simplejwt.views import TokenObtainPairView
 from pyfcm import FCMNotification
 from .models import UserProfile
 from django.conf import settings
+from django.utils import timezone
+import json
 
 class IsAdminOrReadOnly(BasePermission):
     def has_permission(self, request, view):
@@ -350,6 +352,75 @@ class OrderViewSet(viewsets.ModelViewSet):
             'message': 'Commande validée avec succès'
         })
 
+    @action(detail=False, methods=['post'], url_path='valider-panier')
+    def valider_panier_direct(self, request):
+        """Valider un panier directement depuis les données du panier"""
+        try:
+            items = request.data.get('items', [])
+            phone = request.data.get('phone')
+            client_name = request.data.get('client_name')
+            restaurant_id = request.data.get('restaurant_id')
+            
+            if not items:
+                return Response({'error': 'Aucun item dans le panier'}, status=400)
+            
+            if not restaurant_id:
+                return Response({'error': 'ID du restaurant requis'}, status=400)
+            
+            # Calculer le total
+            total_amount = sum(
+                float(item.get('prix', 0)) * int(item.get('quantity', 1))
+                for item in items
+            )
+            
+            # Créer la commande validée directement
+            order_data = {
+                'restaurant_id': restaurant_id,
+                'items': items,
+                'total_amount': total_amount,
+                'status': 'en_attente',  # Directement en attente
+                'phone': phone,
+            }
+            
+            # Si on a un utilisateur authentifié, l'associer
+            if request.user.is_authenticated:
+                order_data['user'] = request.user
+            
+            # Créer la commande
+            order = Order.objects.create(**order_data)
+            
+            # Envoi notification push si possible
+            user = order.user
+            if user and hasattr(user, 'userprofile'):
+                try:
+                    if user.userprofile.fcm_token:
+                        push_service = FCMNotification(api_key='VOTRE_CLE_FCM')
+                        push_service.notify_single_device(
+                            registration_id=user.userprofile.fcm_token,
+                            message_title="Commande validée !",
+                            message_body=f"Votre commande #{order.id} a été validée et est en cours de préparation."
+                        )
+                except Exception as e:
+                    print(f"Erreur envoi notification FCM: {e}")
+            
+            # Notifier le personnel du restaurant
+            try:
+                self._notify_restaurant_staff(order.restaurant, title="Nouvelle commande", body=f"Commande #{order.id} validée.")
+            except Exception as e:
+                print(f"[FCM] Erreur notif staff: {e}")
+            
+            serializer = self.get_serializer(order)
+            return Response({
+                'commande': serializer.data,
+                'message': 'Panier validé avec succès'
+            }, status=201)
+            
+        except Exception as e:
+            import traceback
+            print('[VALIDER-PANIER][ERROR]', str(e))
+            print(traceback.format_exc())
+            return Response({'error': str(e)}, status=500)
+
     @action(detail=True, methods=['post'], url_path='update-status')
     def update_status(self, request, pk=None):
         """Mettre à jour le statut d'une commande"""
@@ -647,6 +718,8 @@ class OrderViewSet(viewsets.ModelViewSet):
         return Response({'message': 'Les feedbacks ne sont pas encore implémentés'}, status=501)
 
 class RestaurantViewSet(viewsets.ReadOnlyModelViewSet):
+    # Évite que des slugs non numériques (ex: "register") soient capturés par la route détail
+    lookup_value_regex = r"\d+"
     queryset = Restaurant.objects.all()
     serializer_class = RestaurantSerializer
     permission_classes = [permissions.AllowAny]
@@ -799,7 +872,10 @@ def upload_image(request):
 @api_view(['POST'])
 @permission_classes([permissions.AllowAny])
 def pin_login(request):
-    """Connexion par PIN pour le personnel"""
+    """Connexion par téléphone + PIN selon la logique Django standard :
+    - username = numéro de téléphone
+    - password = code PIN
+    """
     def _normalize_phone(value):
         if not value:
             return None
@@ -810,72 +886,34 @@ def pin_login(request):
     pin = request.data.get('pin') or request.data.get('pin_code')
     phone_raw = request.data.get('phone') or request.data.get('username')
     phone = _normalize_phone(phone_raw)
+
+    if not phone:
+        return Response({'error': 'Numéro requis'}, status=400)
     if not pin:
         return Response({'error': 'PIN requis'}, status=400)
-    
-    try:
-        # Chercher un utilisateur avec ce PIN exact ou qui a ce PIN comme suffixe de téléphone
-        # On peut aussi ajouter un champ pin_code dédié dans UserProfile pour plus de sécurité
-        user_profile = None
-        
-        # Option A: Si le téléphone est fourni, chercher d'abord par téléphone exact (personnel uniquement)
-        if phone or phone_raw:
-            # Utiliser is_staff au lieu du champ role
-            staff_users = User.objects.filter(is_staff=True, is_active=True)
-            candidates = UserProfile.objects.filter(
-                user__in=staff_users
-            ).filter(
-                Q(phone=phone_raw) | Q(phone=phone) | Q(user__username=phone_raw) | Q(user__username=phone)
-            )
-            candidate = candidates.first()
-            if candidate:
-                # Valider le PIN: vérifier que le PIN correspond aux derniers chiffres du téléphone
-                cand_phone_norm = _normalize_phone(candidate.phone)
-                if cand_phone_norm and str(cand_phone_norm).endswith(str(pin)):
-                    user_profile = candidate
-        
-        # Option B: Fallback global si non trouvé (scanner le personnel et matcher sur suffixe du téléphone)
-        if not user_profile:
-            # Rechercher uniquement les profils du personnel (éviter les clients)
-            # Utiliser is_staff au lieu du champ role
-            staff_users = User.objects.filter(is_staff=True, is_active=True)
-            staff_profiles = UserProfile.objects.filter(
-                user__in=staff_users
-            )
-            for profile in staff_profiles:
-                # Vérifier que le PIN correspond aux derniers chiffres du téléphone
-                pnorm = _normalize_phone(profile.phone)
-                if pnorm and str(pnorm).endswith(str(pin)):
-                    user_profile = profile
-                    break
 
-        # Option C: Fallback par recherche de suffixe de téléphone unique
-        if not user_profile:
-            # Utiliser is_staff au lieu du champ role
-            staff_users = User.objects.filter(is_staff=True, is_active=True)
-            staff_profiles = UserProfile.objects.filter(user__in=staff_users)
-            
-            # Chercher un profil avec un téléphone qui se termine par le PIN
-            matching_profiles = []
-            for profile in staff_profiles:
-                pnorm = _normalize_phone(profile.phone)
-                if pnorm and str(pnorm).endswith(str(pin)):
-                    matching_profiles.append(profile)
-            
-            if len(matching_profiles) == 1:
-                user_profile = matching_profiles[0]
-        
-        if not user_profile:
+    try:
+        # Logique normale Django: username = téléphone, password = PIN
+        user = authenticate(username=phone, password=str(pin))
+
+        if user is None:
+            # Compatibilité avec les anciens comptes créés via le suffixe de téléphone
+            legacy_profile = None
+            if phone:
+                legacy_profile = UserProfile.objects.filter(phone=phone).first()
+            if legacy_profile is not None:
+                legacy_user = legacy_profile.user
+                if legacy_user.check_password(str(pin)):
+                    user = legacy_user
+
+        if user is None:
             return Response({'error': 'PIN incorrect'}, status=401)
-        
-        user = user_profile.user
-        
-        # Vérifier que l'utilisateur est actif
+
         if not user.is_active:
             return Response({'error': 'Compte désactivé'}, status=401)
-        
+
         refresh = RefreshToken.for_user(user)
-        
+
         return Response({
             'access': str(refresh.access_token),
             'refresh': str(refresh),
@@ -890,3 +928,461 @@ def pin_login(request):
     except Exception as e:
         print(f"[DEBUG PIN LOGIN] Erreur: {str(e)}")
         return Response({'error': f'Erreur de connexion: {str(e)}'}, status=500)
+
+# ========= INTÉGRATION WAVE =========
+
+@api_view(['POST'])
+@permission_classes([permissions.AllowAny])
+def create_wave_payment(request):
+    """Créer une URL de paiement Wave pour une commande"""
+    try:
+        order_id = request.data.get('order_id')
+        if not order_id:
+            return Response({'error': 'ID de commande requis'}, status=400)
+        
+        try:
+            order = Order.objects.get(id=order_id)
+        except Order.DoesNotExist:
+            return Response({'error': 'Commande introuvable'}, status=404)
+        
+        # Vérifier que la commande peut être payée
+        if order.payment_status != 'pending':
+            return Response({'error': 'Cette commande a déjà été traitée'}, status=400)
+        
+        # Vérifier que le restaurant a un lien Wave configuré
+        restaurant = order.restaurant
+        if not restaurant.wave_payment_link:
+            return Response({'error': 'Paiement Wave non configuré pour ce restaurant'}, status=400)
+        
+        # Générer l'URL de paiement Wave
+        wave_url = _generate_wave_payment_url(order, restaurant)
+        
+        # Mettre à jour la commande avec l'URL de paiement
+        order.wave_payment_url = wave_url
+        order.save()
+        
+        # Logger l'événement
+        WavePaymentLog.objects.create(
+            order=order,
+            event_type='payment_initiated',
+            amount=order.total_amount,
+            raw_data={'wave_url': wave_url}
+        )
+        
+        return Response({
+            'payment_url': wave_url,
+            'order_id': order.id,
+            'amount': float(order.total_amount),
+            'restaurant': restaurant.nom,
+            'message': 'URL de paiement générée avec succès'
+        })
+        
+    except Exception as e:
+        print(f"[WAVE PAYMENT] Erreur: {str(e)}")
+        return Response({'error': f'Erreur lors de la création du paiement: {str(e)}'}, status=500)
+
+@api_view(['POST'])
+@permission_classes([permissions.AllowAny])
+def wave_webhook(request):
+    """Webhook Wave pour recevoir les notifications de paiement"""
+    try:
+        # Récupérer les données du webhook
+        data = request.data
+        print(f"[WAVE WEBHOOK] Données reçues: {data}")
+        
+        # Extraire les informations importantes
+        transaction_id = data.get('transaction_id') or data.get('id')
+        reference = data.get('reference') or data.get('order_reference')
+        status = data.get('status') or data.get('state')
+        amount = data.get('amount')
+        
+        if not transaction_id:
+            return Response({'error': 'Transaction ID manquant'}, status=400)
+        
+        # Trouver la commande correspondante
+        order = None
+        if reference:
+            try:
+                order = Order.objects.get(wave_payment_reference=reference)
+            except Order.DoesNotExist:
+                pass
+        
+        if not order and transaction_id:
+            # Fallback: chercher par transaction_id dans les logs
+            log = WavePaymentLog.objects.filter(
+                wave_transaction_id=transaction_id
+            ).first()
+            if log:
+                order = log.order
+        
+        if not order:
+            # Logger l'événement même si on ne trouve pas la commande
+            WavePaymentLog.objects.create(
+                order=None,
+                event_type='webhook_received',
+                wave_transaction_id=transaction_id,
+                wave_reference=reference,
+                status=status,
+                amount=amount,
+                raw_data=data,
+                error_message='Commande introuvable'
+            )
+            return Response({'error': 'Commande introuvable'}, status=404)
+        
+        # Logger l'événement
+        WavePaymentLog.objects.create(
+            order=order,
+            event_type='webhook_received',
+            wave_transaction_id=transaction_id,
+            wave_reference=reference,
+            status=status,
+            amount=amount,
+            raw_data=data
+        )
+        
+        # Traiter le statut du paiement
+        if status in ['success', 'completed', 'paid']:
+            # Paiement réussi
+            order.payment_status = 'paid'
+            order.wave_transaction_id = transaction_id
+            order.wave_payment_reference = reference
+            order.payment_date = timezone.now()
+            order.save()
+            
+            # Logger le succès
+            WavePaymentLog.objects.create(
+                order=order,
+                event_type='payment_success',
+                wave_transaction_id=transaction_id,
+                wave_reference=reference,
+                status=status,
+                amount=amount,
+                raw_data=data
+            )
+            
+            # Notifier le client
+            _notify_payment_success(order)
+            
+            return Response({'status': 'success', 'message': 'Paiement confirmé'})
+            
+        elif status in ['failed', 'cancelled', 'expired']:
+            # Paiement échoué
+            order.payment_status = 'failed'
+            order.wave_transaction_id = transaction_id
+            order.wave_payment_reference = reference
+            order.save()
+            
+            # Logger l'échec
+            WavePaymentLog.objects.create(
+                order=order,
+                event_type='payment_failed',
+                wave_transaction_id=transaction_id,
+                wave_reference=reference,
+                status=status,
+                amount=amount,
+                raw_data=data
+            )
+            
+            # Notifier le client
+            _notify_payment_failed(order)
+            
+            return Response({'status': 'failed', 'message': 'Paiement échoué'})
+        
+        else:
+            # Statut inconnu
+            return Response({'status': 'unknown', 'message': f'Statut non traité: {status}'})
+            
+    except Exception as e:
+        print(f"[WAVE WEBHOOK] Erreur: {str(e)}")
+        return Response({'error': f'Erreur webhook: {str(e)}'}, status=500)
+
+@api_view(['GET'])
+@permission_classes([permissions.AllowAny])
+def check_payment_status(request, order_id):
+    """Vérifier le statut de paiement d'une commande"""
+    try:
+        order = Order.objects.get(id=order_id)
+        
+        # Récupérer les logs de paiement récents
+        logs = WavePaymentLog.objects.filter(order=order).order_by('-created_at')[:5]
+        
+        return Response({
+            'order_id': order.id,
+            'payment_status': order.payment_status,
+            'payment_method': order.payment_method,
+            'amount': float(order.total_amount),
+            'payment_date': order.payment_date.isoformat() if order.payment_date else None,
+            'wave_transaction_id': order.wave_transaction_id,
+            'wave_payment_url': order.wave_payment_url,
+            'recent_logs': [
+                {
+                    'event_type': log.event_type,
+                    'status': log.status,
+                    'created_at': log.created_at.isoformat(),
+                    'error_message': log.error_message
+                }
+                for log in logs
+            ]
+        })
+        
+    except Order.DoesNotExist:
+        return Response({'error': 'Commande introuvable'}, status=404)
+    except Exception as e:
+        return Response({'error': f'Erreur: {str(e)}'}, status=500)
+
+# ========= FONCTIONS UTILITAIRES WAVE =========
+
+def _generate_wave_payment_url(order, restaurant):
+    """Générer l'URL de paiement Wave pour une commande"""
+    base_url = restaurant.wave_payment_link
+    
+    # Si c'est un lien Wave personnalisé, ajouter les paramètres
+    if 'wave.com' in base_url or 'waveapp.com' in base_url:
+        # Format Wave standard
+        params = {
+            'amount': str(int(float(order.total_amount) * 100)),  # Wave utilise les centimes
+            'currency': 'XOF',
+            'reference': f'ORDER_{order.id}',
+            'description': f'Commande #{order.id} - {restaurant.nom}',
+            'callback_url': f'{settings.BASE_URL}/api/wave/webhook/',
+            'return_url': f'{settings.BASE_URL}/payment/success/{order.id}/',
+            'cancel_url': f'{settings.BASE_URL}/payment/cancel/{order.id}/'
+        }
+        
+        # Construire l'URL avec les paramètres
+        from urllib.parse import urlencode
+        wave_url = f"{base_url}?{urlencode(params)}"
+        
+        # Mettre à jour la référence de paiement
+        order.wave_payment_reference = params['reference']
+        order.save()
+        
+        return wave_url
+    else:
+        # Lien personnalisé du restaurant
+        return base_url
+
+def _notify_payment_success(order):
+    """Notifier le succès du paiement"""
+    try:
+        # Notification push au client
+        if order.user and hasattr(order.user, 'userprofile'):
+            token = order.user.userprofile.fcm_token
+            if token:
+                push_service = FCMNotification(api_key=getattr(settings, 'FCM_SERVER_KEY', ''))
+                push_service.notify_single_device(
+                    registration_id=token,
+                    message_title="Paiement confirmé ! 🎉",
+                    message_body=f"Votre paiement de {order.total_amount} F CFA a été confirmé. Votre commande #{order.id} est en cours de préparation."
+                )
+        
+        # Notification au restaurant
+        _notify_restaurant_staff(
+            order.restaurant,
+            title="Paiement reçu 💰",
+            body=f"Commande #{order.id} payée - {order.total_amount} F CFA"
+        )
+        
+    except Exception as e:
+        print(f"[NOTIFICATION] Erreur paiement réussi: {e}")
+
+def _notify_payment_failed(order):
+    """Notifier l'échec du paiement"""
+    try:
+        # Notification push au client
+        if order.user and hasattr(order.user, 'userprofile'):
+            token = order.user.userprofile.fcm_token
+            if token:
+                push_service = FCMNotification(api_key=getattr(settings, 'FCM_SERVER_KEY', ''))
+                push_service.notify_single_device(
+                    registration_id=token,
+                    message_title="Paiement échoué ❌",
+                    message_body=f"Le paiement de votre commande #{order.id} a échoué. Veuillez réessayer."
+                )
+        
+    except Exception as e:
+        print(f"[NOTIFICATION] Erreur paiement échoué: {e}")
+
+def _notify_restaurant_staff(restaurant, title, body):
+    """Notifier le personnel du restaurant"""
+    try:
+        staff_users = User.objects.filter(is_staff=True, is_active=True)
+        staff_profiles = UserProfile.objects.filter(
+            user__in=staff_users
+        ).exclude(fcm_token__isnull=True).exclude(fcm_token='')
+        
+        if staff_profiles:
+            push_service = FCMNotification(api_key=getattr(settings, 'FCM_SERVER_KEY', ''))
+            for profile in staff_profiles:
+                try:
+                    push_service.notify_single_device(
+                        registration_id=profile.fcm_token,
+                        message_title=title,
+                        message_body=body
+                    )
+                except Exception as e:
+                    print(f"[FCM] Erreur envoi staff {profile.user_id}: {e}")
+    except Exception as e:
+        print(f"[FCM] Erreur préparation staff list: {e}")
+
+# ========== ENDPOINT PUBLIC POUR DEMANDES D'INSCRIPTION RESTAURANTS ==========
+
+@api_view(['POST'])
+@permission_classes([AllowAny])
+def restaurant_registration_request(request):
+    """
+    Endpoint public pour que les restaurants puissent faire une demande d'inscription
+    """
+    try:
+        data = json.loads(request.body)
+        
+        # Validation des champs obligatoires
+        required_fields = ['nom', 'adresse', 'telephone', 'email', 'nom_gerant', 'telephone_gerant']
+        missing_fields = [field for field in required_fields if not data.get(field)]
+        
+        if missing_fields:
+            return Response({
+                'error': f'Champs manquants: {", ".join(missing_fields)}'
+            }, status=status.HTTP_400_BAD_REQUEST)
+        
+        # Vérifier si un restaurant avec ce nom ou téléphone existe déjà
+        existing_restaurant = Restaurant.objects.filter(
+            Q(nom__iexact=data['nom']) | Q(telephone=data['telephone'])
+        ).first()
+        
+        if existing_restaurant:
+            return Response({
+                'error': 'Un restaurant avec ce nom ou ce numéro de téléphone existe déjà'
+            }, status=status.HTTP_400_BAD_REQUEST)
+        
+        # Créer la demande d'inscription (statut 'en_attente')
+        restaurant = Restaurant.objects.create(
+            nom=data['nom'],
+            adresse=data['adresse'],
+            telephone=data['telephone'],
+            email=data['email'],
+            description=data.get('description', ''),
+            statut='en_attente',  # En attente de validation
+            actif=False,  # Inactif jusqu'à validation
+            # Champs supplémentaires pour la demande
+            nom_gerant=data['nom_gerant'],
+            telephone_gerant=data['telephone_gerant'],
+            type_cuisine=data.get('type_cuisine', ''),
+            capacite=data.get('capacite', 0),
+            horaires=data.get('horaires', ''),
+            documents_legaux=data.get('documents_legaux', False),
+            # Configuration Wave
+            wave_payment_link=data.get('wave_payment_link', ''),
+            wave_merchant_id=data.get('wave_merchant_id', ''),
+            wave_api_key=data.get('wave_api_key', '')
+        )
+        
+        # Notifier les admins de la nouvelle demande
+        try:
+            send_notification_to_admins(
+                "Nouvelle demande d'inscription",
+                f"Le restaurant '{restaurant.nom}' a soumis une demande d'inscription",
+                "restaurant_request"
+            )
+        except Exception as e:
+            print(f"Erreur notification admin: {e}")
+        
+        return Response({
+            'success': True,
+            'message': 'Votre demande d\'inscription a été soumise avec succès. Vous recevrez une réponse sous 24-48h.',
+            'restaurant_id': restaurant.id,
+            'statut': restaurant.statut
+        }, status=status.HTTP_201_CREATED)
+        
+    except json.JSONDecodeError:
+        return Response({
+            'error': 'Données JSON invalides'
+        }, status=status.HTTP_400_BAD_REQUEST)
+    except Exception as e:
+        return Response({
+            'error': f'Erreur lors de la soumission: {str(e)}'
+        }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+@api_view(['GET'])
+@permission_classes([AllowAny])
+def restaurant_registration_info(request):
+    """
+    Informations sur le processus d'inscription pour les restaurants
+    """
+    return Response({
+        'process': {
+            'etapes': [
+                '1. Soumettre votre demande avec tous les documents requis',
+                '2. Notre équipe examine votre dossier sous 24-48h',
+                '3. Si approuvé, vous recevez vos identifiants de connexion',
+                '4. Vous pouvez alors configurer votre menu et commencer à recevoir des commandes'
+            ],
+            'documents_requis': [
+                'Nom et adresse du restaurant',
+                'Numéro de téléphone et email',
+                'Nom du gérant responsable',
+                'Type de cuisine proposée',
+                'Documents légaux (optionnel)'
+            ],
+            'avantages': [
+                'Interface de gestion complète',
+                'Gestion des commandes en temps réel',
+                'Système de paiement intégré (Wave)',
+                'Statistiques et rapports',
+                'Support client dédié'
+            ],
+            'wave_configuration': {
+                'description': 'Vous pouvez configurer vos paramètres Wave directement lors de l\'inscription ou plus tard dans votre espace admin',
+                'champs': [
+                    'Lien de paiement Wave (pour recevoir les paiements)',
+                    'ID Marchand Wave (identifiant unique)',
+                    'Clé API Wave (pour l\'intégration automatique)'
+                ],
+                'optionnel': True,
+                'aide': 'Contactez le support Wave si vous n\'avez pas encore ces informations'
+            }
+        }
+    })
+
+@api_view(['POST'])
+@permission_classes([AllowAny])
+def validate_wave_link(request):
+    """
+    Valider un lien de paiement Wave
+    """
+    try:
+        data = json.loads(request.body)
+        wave_link = data.get('wave_link', '')
+        
+        if not wave_link:
+            return Response({
+                'valid': False,
+                'error': 'Lien Wave requis'
+            }, status=status.HTTP_400_BAD_REQUEST)
+        
+        # Validation basique de l'URL Wave
+        if not wave_link.startswith('https://wave.com/pay/'):
+            return Response({
+                'valid': False,
+                'error': 'Le lien doit commencer par https://wave.com/pay/'
+            }, status=status.HTTP_400_BAD_REQUEST)
+        
+        # Ici, vous pourriez faire une vraie validation avec l'API Wave
+        # Pour l'instant, on fait juste une validation de format
+        
+        return Response({
+            'valid': True,
+            'message': 'Lien Wave valide',
+            'formatted_link': wave_link
+        })
+        
+    except json.JSONDecodeError:
+        return Response({
+            'valid': False,
+            'error': 'Données JSON invalides'
+        }, status=status.HTTP_400_BAD_REQUEST)
+    except Exception as e:
+        return Response({
+            'valid': False,
+            'error': f'Erreur de validation: {str(e)}'
+        }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)

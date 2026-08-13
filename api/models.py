@@ -142,6 +142,40 @@ class Restaurant(models.Model):
     statut = models.CharField(max_length=20, choices=STATUT_CHOICES, default='actif')
     actif = models.BooleanField(default=True)
     logo = models.ImageField(upload_to='restaurant_logos/', blank=True, null=True)
+    
+    # Champs pour les demandes d'inscription
+    nom_gerant = models.CharField(max_length=100, blank=True, null=True, help_text="Nom du gérant responsable")
+    telephone_gerant = models.CharField(max_length=20, blank=True, null=True, help_text="Téléphone du gérant")
+    type_cuisine = models.CharField(max_length=100, blank=True, null=True, help_text="Type de cuisine (sénégalaise, française, etc.)")
+    capacite = models.PositiveIntegerField(default=0, help_text="Capacité d'accueil du restaurant")
+    horaires = models.TextField(blank=True, null=True, help_text="Horaires d'ouverture")
+    documents_legaux = models.BooleanField(default=False, help_text="Documents légaux fournis")
+    
+    # Configuration Wave
+    wave_payment_link = models.URLField(
+        blank=True, 
+        null=True, 
+        help_text="Lien de paiement Wave du restaurant"
+    )
+    wave_merchant_id = models.CharField(
+        max_length=100, 
+        blank=True, 
+        null=True,
+        help_text="ID marchand Wave (si API disponible)"
+    )
+    wave_api_key = models.CharField(
+        max_length=200, 
+        blank=True, 
+        null=True,
+        help_text="Clé API Wave (si API disponible)"
+    )
+    wave_webhook_secret = models.CharField(
+        max_length=200, 
+        blank=True, 
+        null=True,
+        help_text="Secret pour valider les webhooks Wave"
+    )
+    
     created_at = models.DateTimeField(auto_now_add=True, null=True, blank=True)
     updated_at = models.DateTimeField(auto_now=True, null=True, blank=True)
 
@@ -223,12 +257,56 @@ class Order(models.Model):
         ('annule', 'Annulé'),
     ]
     
+    PAYMENT_STATUS_CHOICES = [
+        ('pending', 'En attente de paiement'),
+        ('paid', 'Payé'),
+        ('failed', 'Échec du paiement'),
+        ('cancelled', 'Paiement annulé'),
+        ('refunded', 'Remboursé'),
+    ]
+    
     user = models.ForeignKey(User, on_delete=models.CASCADE, null=True, blank=True)
     restaurant = models.ForeignKey(Restaurant, on_delete=models.CASCADE)
     items = models.JSONField(default=list)
     total_amount = models.DecimalField(max_digits=10, decimal_places=2)
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='panier')
     phone = models.CharField(max_length=20, blank=True, null=True)
+    
+    # Gestion des paiements Wave
+    payment_status = models.CharField(
+        max_length=20, 
+        choices=PAYMENT_STATUS_CHOICES, 
+        default='pending',
+        help_text="Statut du paiement"
+    )
+    wave_payment_url = models.URLField(
+        blank=True, 
+        null=True,
+        help_text="URL de paiement Wave générée"
+    )
+    wave_transaction_id = models.CharField(
+        max_length=100, 
+        blank=True, 
+        null=True,
+        help_text="ID de transaction Wave"
+    )
+    wave_payment_reference = models.CharField(
+        max_length=100, 
+        blank=True, 
+        null=True,
+        help_text="Référence de paiement Wave"
+    )
+    payment_date = models.DateTimeField(
+        blank=True, 
+        null=True,
+        help_text="Date et heure du paiement"
+    )
+    payment_method = models.CharField(
+        max_length=50, 
+        default='wave',
+        help_text="Méthode de paiement utilisée"
+    )
+    
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
     
@@ -237,6 +315,37 @@ class Order(models.Model):
     
     def __str__(self):
         return f"Commande #{self.id} - {self.restaurant.nom}"
+    
+    @property
+    def is_paid(self):
+        """Vérifie si la commande est payée"""
+        return self.payment_status == 'paid'
+    
+    @property
+    def can_be_prepared(self):
+        """Vérifie si la commande peut être préparée (payée et en attente)"""
+        return self.is_paid and self.status == 'en_attente'
+
+class WavePaymentLog(models.Model):
+    """Log des transactions Wave pour audit et debugging"""
+    order = models.ForeignKey(Order, on_delete=models.CASCADE, related_name='wave_logs')
+    event_type = models.CharField(
+        max_length=50,
+        help_text="Type d'événement: payment_initiated, payment_success, payment_failed, webhook_received"
+    )
+    wave_transaction_id = models.CharField(max_length=100, blank=True, null=True)
+    wave_reference = models.CharField(max_length=100, blank=True, null=True)
+    amount = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
+    status = models.CharField(max_length=50, blank=True, null=True)
+    raw_data = models.JSONField(default=dict, help_text="Données brutes reçues de Wave")
+    error_message = models.TextField(blank=True, null=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    
+    class Meta:
+        ordering = ['-created_at']
+    
+    def __str__(self):
+        return f"Wave Log - {self.event_type} - Commande #{self.order.id}"
 
 @receiver(post_save, sender=User)
 def create_user_profile(sender, instance, created, **kwargs):

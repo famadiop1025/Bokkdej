@@ -11,6 +11,7 @@ import 'admin_statistics_page.dart';
 import 'admin_settings_page.dart';
 import 'admin_reports_page.dart';
 import 'admin_restaurant_management.dart';
+import 'admin_wave_management.dart';
 
 String getApiBaseUrl() {
   if (kIsWeb) {
@@ -329,6 +330,12 @@ class _AdminDashboardState extends State<AdminDashboard> {
                 Icons.business,
                 Colors.orange,
                 () => _navigateToPage(AdminRestaurantManagement(token: widget.token)),
+              ),
+              _buildFunctionalityCard(
+                'Configuration Wave',
+                Icons.payment,
+                Colors.indigo,
+                () => _navigateToPage(AdminWaveManagement(token: widget.token)),
               ),
               _buildFunctionalityCard(
                 'Gestion des ingrédients',

@@ -1,15 +1,13 @@
 import 'package:flutter/material.dart';
-import 'package:flutter/foundation.dart' show kIsWeb, defaultTargetPlatform;
-import 'package:flutter/widgets.dart' show TargetPlatform;
 import 'package:provider/provider.dart';
-import 'restaurant_choice_page.dart';
-import 'pin_login_page.dart';
-import 'staff_login_page.dart';
 import 'providers/cart_provider.dart';
 import 'providers/menu_provider.dart';
 import 'providers/restaurant_provider.dart';
 import 'theme/app_theme.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'restaurant_choice_page.dart';
+import 'staff_login_page.dart';
+import 'restaurant_registration_page.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -25,7 +23,7 @@ class KeurRestoApp extends StatelessWidget {
   Widget build(BuildContext context) {
     return MultiProvider(
       providers: [
-        ChangeNotifierProvider(create: (_) => CartProvider('')),
+        ChangeNotifierProvider(create: (_) => CartProvider()),
         ChangeNotifierProvider(create: (_) => MenuProvider('')),
         ChangeNotifierProvider(create: (_) => RestaurantProvider()),
       ],
@@ -58,7 +56,7 @@ class WelcomePage extends StatelessWidget {
                   borderRadius: BorderRadius.circular(24),
                   boxShadow: [
                     BoxShadow(
-                      color: Colors.black.withOpacity(0.2),
+                      color: Colors.black.withAlpha(51),
                       blurRadius: 12,
                       offset: Offset(0, 6),
                     ),
@@ -86,7 +84,7 @@ class WelcomePage extends StatelessWidget {
                       'Commande Simple',
                       style: TextStyle(
                         fontSize: 18,
-                        color: AppTheme.darkGrey.withOpacity(0.8),
+                        color: AppTheme.darkGrey.withAlpha(204),
                         fontWeight: FontWeight.w500,
                       ),
                     ),
@@ -190,6 +188,41 @@ class WelcomePage extends StatelessWidget {
                         style: TextStyle(
                           fontSize: 18,
                           fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+              
+              const SizedBox(height: 16),
+              
+              // Bouton Inscription Restaurant
+              Container(
+                width: double.infinity,
+                height: 50,
+                child: TextButton(
+                  onPressed: () {
+                    Navigator.push(
+                      context,
+                      MaterialPageRoute(
+                        builder: (context) => RestaurantRegistrationPage(),
+                      ),
+                    );
+                  },
+                  style: TextButton.styleFrom(
+                    foregroundColor: AppTheme.darkGrey.withOpacity(0.7),
+                  ),
+                  child: Row(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      Icon(Icons.add_business, size: 20),
+                      const SizedBox(width: 8),
+                      Text(
+                        'Vous êtes restaurateur ? Inscrivez-vous',
+                        style: TextStyle(
+                          fontSize: 16,
+                          fontWeight: FontWeight.w500,
                         ),
                       ),
                     ],

@@ -13,7 +13,7 @@ import 'package:keur_resto_front/main.dart';
 void main() {
   testWidgets('Counter increments smoke test', (WidgetTester tester) async {
     // Build our app and trigger a frame.
-    await tester.pumpWidget(const KeurRestoApp(token: 'test_token'));
+    await tester.pumpWidget(const KeurRestoApp());
 
     // Verify that our counter starts at 0.
     expect(find.text('0'), findsOneWidget);

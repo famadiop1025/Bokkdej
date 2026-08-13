@@ -1,6 +1,4 @@
 import 'package:flutter/material.dart';
-import 'package:http/http.dart' as http;
-import 'dart:convert';
 
 String getApiBaseUrl() {
   return 'http://localhost:8000';
@@ -9,7 +7,7 @@ String getApiBaseUrl() {
 class AdminNavigationPage extends StatefulWidget {
   final String token;
   
-  const AdminNavigationPage({Key? key, required this.token}) : super(key: key);
+  const AdminNavigationPage({super.key, required this.token});
 
   @override
   State<AdminNavigationPage> createState() => _AdminNavigationPageState();
@@ -117,7 +115,7 @@ class _AdminNavigationPageState extends State<AdminNavigationPage> {
               padding: EdgeInsets.all(20),
               decoration: BoxDecoration(
                 gradient: LinearGradient(
-                  colors: [Color(0xFFFFD700), Color(0xFFFFD700).withOpacity(0.8)],
+                                     colors: [Color(0xFFFFD700), Color(0xFFFFD700).withAlpha(204)],
                   begin: Alignment.topLeft,
                   end: Alignment.bottomRight,
                 ),
@@ -139,7 +137,7 @@ class _AdminNavigationPageState extends State<AdminNavigationPage> {
                     'Gérez votre système restaurant',
                     style: TextStyle(
                       fontSize: 16,
-                      color: Colors.white.withOpacity(0.9),
+                                             color: Colors.white.withAlpha(230),
                     ),
                   ),
                 ],

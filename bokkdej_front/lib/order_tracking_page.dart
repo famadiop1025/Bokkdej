@@ -9,10 +9,10 @@ String getApiBaseUrl() {
 
 class OrderTrackingPage extends StatefulWidget {
 	final int orderId;
-	final String token;
+	final String? token;
 	final String? phone;
 
-	const OrderTrackingPage({Key? key, required this.orderId, required this.token, this.phone}) : super(key: key);
+	const OrderTrackingPage({Key? key, required this.orderId, this.token, this.phone}) : super(key: key);
 
   @override
 	State<OrderTrackingPage> createState() => _OrderTrackingPageState();
@@ -41,7 +41,7 @@ class _OrderTrackingPageState extends State<OrderTrackingPage> {
 				if ((widget.phone ?? '').isNotEmpty) 'phone': widget.phone!,
 			});
 			final resp = await http.get(uri, headers: {
-				if (widget.token.isNotEmpty) 'Authorization': 'Bearer ${widget.token}',
+				if (widget.token != null && widget.token!.isNotEmpty) 'Authorization': 'Bearer ${widget.token}',
 			});
 			if (resp.statusCode == 200) {
         setState(() {
@@ -102,7 +102,7 @@ class _OrderTrackingPageState extends State<OrderTrackingPage> {
 				uri,
 				headers: {
 					'Content-Type': 'application/json',
-					if (widget.token.isNotEmpty) 'Authorization': 'Bearer ${widget.token}',
+					if (widget.token != null && widget.token!.isNotEmpty) 'Authorization': 'Bearer ${widget.token}',
 				},
 				body: json.encode({
 					if (rating != null) 'rating': rating,

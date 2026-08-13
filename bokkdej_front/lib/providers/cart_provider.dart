@@ -1,8 +1,6 @@
 import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 import 'dart:convert';
-import 'package:shared_preferences/shared_preferences.dart';
-import '../services/device_id_service.dart';
 
 String getApiBaseUrl() {
   return 'http://localhost:8000';
@@ -10,23 +8,30 @@ String getApiBaseUrl() {
 
 class CartProvider with ChangeNotifier {
   List<Map<String, dynamic>> _items = [];
-  String _token;
   String? _phone;
-  int? _restaurantId;
+  String? _clientName;
+  String? _clientEmail;
   int? _selectedRestaurantId;
   String? _selectedRestaurantName;
 
-  CartProvider(this._token);
-  String get token => _token;
+  CartProvider();
   
   List<Map<String, dynamic>> get items => _items;
   String? get phone => _phone;
-  int? get restaurantId => _restaurantId;
+  String? get clientName => _clientName;
+  String? get clientEmail => _clientEmail;
+
   int? get selectedRestaurantId => _selectedRestaurantId;
   String? get selectedRestaurantName => _selectedRestaurantName;
 
   void setPhone(String phone) {
     _phone = phone;
+    notifyListeners();
+  }
+
+  void setClientInfo(String name, String email) {
+    _clientName = name;
+    _clientEmail = email;
     notifyListeners();
   }
 
@@ -90,29 +95,73 @@ class CartProvider with ChangeNotifier {
         Uri.parse('${getApiBaseUrl()}/api/orders/valider-panier/'),
         headers: {
           'Content-Type': 'application/json',
-          if (_token.isNotEmpty) 'Authorization': 'Bearer $_token',
         },
         body: json.encode({
           'items': _items,
           'phone': _phone,
+          'client_name': _clientName,
           'restaurant_id': _selectedRestaurantId,
         }),
       );
 
-      if (response.statusCode == 200) {
+      if (response.statusCode == 200 || response.statusCode == 201) {
         final data = json.decode(response.body);
         return {'ok': true, 'data': data};
       } else {
-        final errorData = json.decode(response.body);
-        return {'ok': false, 'message': errorData.get('error', 'Erreur lors de la commande')};
+        try {
+          final errorData = json.decode(response.body);
+          final errorMessage = errorData is Map ? errorData['error'] ?? 'Erreur lors de la commande' : 'Erreur lors de la commande';
+          return {'ok': false, 'message': errorMessage};
+        } catch (_) {
+          return {'ok': false, 'message': 'Erreur lors de la commande'};
+        }
       }
     } catch (e) {
       return {'ok': false, 'message': 'Erreur de connexion: $e'};
     }
   }
 
-  void setRestaurantId(int id) {
-    _restaurantId = id;
-    notifyListeners();
+  /// Créer une commande et retourner les informations pour le paiement
+  Future<Map<String, dynamic>> createOrderForPayment() async {
+    try {
+      final response = await http.post(
+        Uri.parse('${getApiBaseUrl()}/api/orders/valider-panier/'),
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: json.encode({
+          'items': _items,
+          'phone': _phone,
+          'client_name': _clientName,
+          'restaurant_id': _selectedRestaurantId,
+        }),
+      );
+
+      if (response.statusCode == 200 || response.statusCode == 201) {
+        final data = json.decode(response.body);
+        final commande = data['commande'];
+        
+        return {
+          'ok': true,
+          'orderId': commande['id'],
+          'amount': commande['total_amount'],
+          'restaurantName': _selectedRestaurantName ?? 'Restaurant',
+          'items': _items,
+          'data': data,
+        };
+      } else {
+        try {
+          final errorData = json.decode(response.body);
+          final errorMessage = errorData is Map ? errorData['error'] ?? 'Erreur lors de la commande' : 'Erreur lors de la commande';
+          return {'ok': false, 'message': errorMessage};
+        } catch (_) {
+          return {'ok': false, 'message': 'Erreur lors de la commande'};
+        }
+      }
+    } catch (e) {
+      return {'ok': false, 'message': 'Erreur de connexion: $e'};
+    }
   }
+
+
 }

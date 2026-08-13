@@ -10,7 +10,7 @@ class RestaurantProvider with ChangeNotifier {
   String? get selectedRestaurantName => _selectedRestaurantName;
   Map<String, dynamic>? get restaurantInfo => _restaurantInfo;
 
-  // Informations des restaurants
+  // Informations des restaurants (démo). Peut être vide pour les IDs dynamiques
   static const Map<int, Map<String, dynamic>> _restaurants = {
     1: {
       'id': 1,
@@ -19,8 +19,8 @@ class RestaurantProvider with ChangeNotifier {
       'image': 'assets/images/restaurant1.jpg',
       'specialite': 'Plats traditionnels',
       'note': 4.8,
-      'theme_color': 0xFFFFD700, // Jaune doré
-      'accent_color': 0xFFFFD700, // Jaune doré
+      'theme_color': 0xFFFFD700,
+      'accent_color': 0xFFFFD700,
     },
     2: {
       'id': 2,
@@ -29,8 +29,8 @@ class RestaurantProvider with ChangeNotifier {
       'image': 'assets/images/restaurant2.jpg',
       'specialite': 'Cuisine fusion',
       'note': 4.6,
-      'theme_color': 0xFFFFD700, // Jaune doré
-      'accent_color': 0xFFFFD700, // Jaune doré
+      'theme_color': 0xFFFFD700,
+      'accent_color': 0xFFFFD700,
     },
     3: {
       'id': 3,
@@ -39,8 +39,8 @@ class RestaurantProvider with ChangeNotifier {
       'image': 'assets/images/restaurant3.jpg',
       'specialite': 'Plats maison',
       'note': 4.9,
-      'theme_color': 0xFFFFD700, // Jaune doré
-      'accent_color': 0xFFFFD700, // Jaune doré
+      'theme_color': 0xFFFFD700,
+      'accent_color': 0xFFFFD700,
     },
   };
 
@@ -49,27 +49,32 @@ class RestaurantProvider with ChangeNotifier {
     final restaurantId = prefs.getInt('restaurant_id');
     final restaurantName = prefs.getString('restaurant_nom');
     
-    if (restaurantId != null && _restaurants.containsKey(restaurantId)) {
+    if (restaurantId != null) {
       _selectedRestaurantId = restaurantId;
-      _selectedRestaurantName = restaurantName;
-      _restaurantInfo = _restaurants[restaurantId];
+      // Si présent dans la map démo, on enrichit les infos, sinon on crée une info minimale
+      _restaurantInfo = _restaurants[restaurantId] ?? {
+        'id': restaurantId,
+        'nom': restaurantName ?? 'Restaurant',
+      };
+      _selectedRestaurantName = restaurantName ?? _restaurantInfo!['nom'];
       notifyListeners();
     }
   }
 
-  Future<void> selectRestaurant(int restaurantId) async {
-    if (_restaurants.containsKey(restaurantId)) {
-      _selectedRestaurantId = restaurantId;
-      _restaurantInfo = _restaurants[restaurantId];
-      _selectedRestaurantName = _restaurantInfo!['nom'];
-      
-      // Sauvegarder la sélection
-      final prefs = await SharedPreferences.getInstance();
-      await prefs.setInt('restaurant_id', restaurantId);
-      await prefs.setString('restaurant_nom', _selectedRestaurantName!);
-      
-      notifyListeners();
-    }
+  Future<void> selectRestaurant(int restaurantId, {String? name}) async {
+    _selectedRestaurantId = restaurantId;
+    // Utiliser nom fourni, sinon chercher dans la map démo
+    _selectedRestaurantName = name ?? _restaurants[restaurantId]?['nom'] ?? 'Restaurant';
+    _restaurantInfo = _restaurants[restaurantId] ?? {
+      'id': restaurantId,
+      'nom': _selectedRestaurantName,
+    };
+
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setInt('restaurant_id', restaurantId);
+    await prefs.setString('restaurant_nom', _selectedRestaurantName!);
+
+    notifyListeners();
   }
 
   void clearRestaurant() {

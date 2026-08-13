@@ -29,4 +29,14 @@ urlpatterns = [
     path('auth/pin-login/', pin_login, name='pin_login'),
     path('auth/create-client/', create_client_account, name='create_client'),
     path('auth/client-login/', client_login, name='client_login'),
+    
+    # Endpoints pour demandes d'inscription restaurants
+    path('restaurants/register/', restaurant_registration_request, name='restaurant_registration'),
+    path('restaurants/register-info/', restaurant_registration_info, name='restaurant_registration_info'),
+    path('restaurants/validate-wave/', validate_wave_link, name='validate_wave_link'),
+    
+    # Endpoints Wave
+    path('wave/create-payment/', create_wave_payment, name='create_wave_payment'),
+    path('wave/webhook/', wave_webhook, name='wave_webhook'),
+    path('wave/payment-status/<int:order_id>/', check_payment_status, name='check_payment_status'),
 ] 

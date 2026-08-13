@@ -34,6 +34,10 @@ class _AdminRestaurantManagementState extends State<AdminRestaurantManagement> {
     'rejete': Colors.grey,
   };
 
+  String getApiBaseUrl() {
+    return 'http://localhost:8000';
+  }
+
   @override
   void initState() {
     super.initState();
@@ -433,11 +437,65 @@ class _AdminRestaurantManagementState extends State<AdminRestaurantManagement> {
             crossAxisAlignment: CrossAxisAlignment.start,
             mainAxisSize: MainAxisSize.min,
             children: [
+              // Section Restaurant
+              Text(
+                'Informations Restaurant',
+                style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
+              ),
+              SizedBox(height: 8),
               _buildDetailRow('Statut', _getStatusLabel(restaurant['statut'])),
               _buildDetailRow('Adresse', restaurant['adresse'] ?? 'Non renseignée'),
               _buildDetailRow('Téléphone', restaurant['telephone'] ?? 'Non renseigné'),
               _buildDetailRow('Email', restaurant['email'] ?? 'Non renseigné'),
               _buildDetailRow('Actif', restaurant['actif'] == true ? 'Oui' : 'Non'),
+              
+              // Section Gérant (si disponible)
+              if (restaurant['nom_gerant'] != null) ...[
+                SizedBox(height: 16),
+                Text(
+                  'Informations Gérant',
+                  style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
+                ),
+                SizedBox(height: 8),
+                _buildDetailRow('Nom gérant', restaurant['nom_gerant']),
+                if (restaurant['telephone_gerant'] != null)
+                  _buildDetailRow('Téléphone gérant', restaurant['telephone_gerant']),
+              ],
+              
+              // Section Détails supplémentaires
+              if (restaurant['type_cuisine'] != null || restaurant['capacite'] != null || restaurant['horaires'] != null) ...[
+                SizedBox(height: 16),
+                Text(
+                  'Détails Restaurant',
+                  style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
+                ),
+                SizedBox(height: 8),
+                if (restaurant['type_cuisine'] != null)
+                  _buildDetailRow('Type cuisine', restaurant['type_cuisine']),
+                if (restaurant['capacite'] != null)
+                  _buildDetailRow('Capacité', '${restaurant['capacite']} places'),
+                if (restaurant['horaires'] != null)
+                  _buildDetailRow('Horaires', restaurant['horaires']),
+                if (restaurant['documents_legaux'] == true)
+                  _buildDetailRow('Documents légaux', 'Fournis'),
+              ],
+              
+              // Section Configuration Wave
+              if (restaurant['wave_payment_link'] != null || restaurant['wave_merchant_id'] != null || restaurant['wave_api_key'] != null) ...[
+                SizedBox(height: 16),
+                Text(
+                  'Configuration Wave',
+                  style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
+                ),
+                SizedBox(height: 8),
+                if (restaurant['wave_payment_link'] != null && restaurant['wave_payment_link'].isNotEmpty)
+                  _buildDetailRow('Lien Wave', restaurant['wave_payment_link']),
+                if (restaurant['wave_merchant_id'] != null && restaurant['wave_merchant_id'].isNotEmpty)
+                  _buildDetailRow('ID Marchand', restaurant['wave_merchant_id']),
+                if (restaurant['wave_api_key'] != null && restaurant['wave_api_key'].isNotEmpty)
+                  _buildDetailRow('Clé API', '***${restaurant['wave_api_key'].substring(restaurant['wave_api_key'].length - 4)}'),
+              ],
+              
               if (restaurant['date_validation'] != null)
                 _buildDetailRow('Date validation', restaurant['date_validation']),
             ],

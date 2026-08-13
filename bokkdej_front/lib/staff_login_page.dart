@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'pin_login_page.dart';
+import 'restaurant_registration_page.dart';
 
 class StaffLoginPage extends StatelessWidget {
   @override
@@ -80,25 +81,15 @@ class StaffLoginPage extends StatelessWidget {
                 
                 TextButton(
                   onPressed: () {
-                    showDialog(
-                      context: context,
-                      builder: (context) => AlertDialog(
-                        title: Text('Information'),
-                        content: Text(
-                          'Pour vous inscrire en tant que restaurant, '
-                          'contactez l\'administrateur système.'
-                        ),
-                        actions: [
-                          TextButton(
-                            onPressed: () => Navigator.pop(context),
-                            child: Text('OK'),
-                          ),
-                        ],
+                    Navigator.push(
+                      context,
+                      MaterialPageRoute(
+                        builder: (context) => RestaurantRegistrationPage(),
                       ),
                     );
                   },
                   child: Text(
-                    'Pas encore inscrit ? Contactez l\'admin',
+                    'Pas encore inscrit ? Inscrivez votre restaurant',
                     style: TextStyle(color: Color(0xFF2C2C2C)),
                   ),
                 ),
